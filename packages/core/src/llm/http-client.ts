@@ -19,17 +19,21 @@ export class HttpStatusError extends Error {
   }
 }
 
-/** Options for sending JSON POST requests with SSRF-guarded manual redirect handling. */
-export interface PostJsonRequestOptions {
+/** Options for sending JSON GET requests with SSRF-guarded manual redirect handling. */
+export interface GetJsonRequestOptions {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
-  readonly body: unknown;
   readonly allowLoopbackHttp: boolean;
   readonly allowPrivateHttps?: boolean;
   readonly secretToRedact?: string;
   readonly maxRedirects?: number;
   readonly timeoutMs?: number;
   readonly fetchFn?: FetchFn;
+}
+
+/** Options for sending JSON POST requests with SSRF-guarded manual redirect handling. */
+export interface PostJsonRequestOptions extends GetJsonRequestOptions {
+  readonly body: unknown;
 }
 
 /** Scrubs literal BYOK/Gitea secret values and token patterns before logging or throwing errors. */
@@ -121,12 +125,9 @@ function hasCredentialHeaders(headers: Readonly<Record<string, string>>): boolea
   );
 }
 
-/**
- * Posts JSON using `redirect: 'manual'`, rejecting cross-origin or downgrade redirects when credentials
- * are sent, enforcing bounded response reads, and scrubbing secrets from all error messages.
- */
-export async function postJsonWithManualRedirects(
-  options: PostJsonRequestOptions,
+async function requestJsonWithManualRedirects(
+  method: 'GET' | 'POST',
+  options: GetJsonRequestOptions & { readonly body?: unknown },
 ): Promise<unknown> {
   const fetchFn: FetchFn = options.fetchFn ?? ((url, init) => fetch(url, init));
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
@@ -137,19 +138,22 @@ export async function postJsonWithManualRedirects(
   };
   const authPresent = hasCredentialHeaders(options.headers);
   let currentUrl = validateUrlPolicy(options.url, policy).toString();
-  const serializedBody = JSON.stringify(options.body);
+  const serializedBody = method === 'POST' ? JSON.stringify(options.body) : undefined;
 
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
     let response: Response;
     try {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        ...options.headers,
+      };
+      if (method === 'POST') {
+        headers['Content-Type'] = 'application/json';
+      }
       response = await fetchFn(currentUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          ...options.headers,
-        },
-        body: serializedBody,
+        method,
+        headers,
+        ...(serializedBody !== undefined ? { body: serializedBody } : {}),
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -186,4 +190,20 @@ export async function postJsonWithManualRedirects(
   }
 
   throw new Error('Fluxo de redirecionamento HTTP encerrado inesperadamente');
+}
+
+/**
+ * Fetches JSON using HTTP GET with `redirect: 'manual'`, SSRF policy enforcement, bounded reads,
+ * and automatic secret scrubbing.
+ */
+export function getJsonWithManualRedirects(options: GetJsonRequestOptions): Promise<unknown> {
+  return requestJsonWithManualRedirects('GET', options);
+}
+
+/**
+ * Posts JSON using `redirect: 'manual'`, rejecting cross-origin or downgrade redirects when credentials
+ * are sent, enforcing bounded response reads, and scrubbing secrets from all error messages.
+ */
+export function postJsonWithManualRedirects(options: PostJsonRequestOptions): Promise<unknown> {
+  return requestJsonWithManualRedirects('POST', options);
 }

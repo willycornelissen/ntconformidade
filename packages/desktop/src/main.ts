@@ -200,9 +200,44 @@ function attachWindowSecurityGuards(
   });
 }
 
+/**
+ * On Linux sessions without `XDG_CURRENT_DESKTOP` (such as WSL2/WSLg), Chromium skips
+ * Secret Service auto-detection and falls back to `basic_text` (`isEncryptionAvailable() === false`).
+ * Pointing `password-store` at `gnome-libsecret` when a D-Bus session bus is present restores
+ * OS keyring encryption via `gnome-keyring-daemon` before `app.whenReady()`.
+ */
+export function configureLinuxKeyringBackend(options: {
+  readonly platform: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly commandLine: {
+    hasSwitch(name: string): boolean;
+    appendSwitch(name: string, value?: string): void;
+  };
+}): boolean {
+  if (options.platform !== 'linux') {
+    return false;
+  }
+  if (options.commandLine.hasSwitch('password-store')) {
+    return false;
+  }
+  if (options.env.XDG_CURRENT_DESKTOP?.trim()) {
+    return false;
+  }
+  if (!options.env.DBUS_SESSION_BUS_ADDRESS?.trim()) {
+    return false;
+  }
+  options.commandLine.appendSwitch('password-store', 'gnome-libsecret');
+  return true;
+}
+
 /** Boots Electron BrowserWindow, SQLite WAL database, SafeStorage vault, CSP, and IPC channels. */
 export async function bootstrapDesktopApp(): Promise<void> {
   const { app, BrowserWindow, ipcMain, Menu, net, safeStorage, session } = await import('electron');
+  configureLinuxKeyringBackend({
+    platform: process.platform,
+    env: process.env,
+    commandLine: app.commandLine,
+  });
   await app.whenReady();
   Menu.setApplicationMenu(null);
 

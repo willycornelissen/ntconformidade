@@ -44,6 +44,10 @@ export const IPC_CHANNELS = Object.freeze({
   OPEN_PR: 'ntc:open-pr',
   SET_SECRET: 'ntc:set-secret',
   GET_SECRET_STATUS: 'ntc:get-secret-status',
+  GET_BYOK_CONFIG: 'ntc:get-byok-config',
+  SAVE_BYOK_CONFIG: 'ntc:save-byok-config',
+  START_COPILOT_AUTH: 'ntc:start-copilot-auth',
+  POLL_COPILOT_AUTH: 'ntc:poll-copilot-auth',
   LIST_RUNS: 'ntc:list-runs',
   GET_PENDING_GATE: 'ntc:get-pending-gate',
   RUN_PROGRESS: 'ntc:run-progress',
@@ -169,6 +173,31 @@ export const GetPendingGateRequestSchema = z.object({
   runId: z.string().min(1),
 });
 
+export const GetByokConfigRequestSchema = z.undefined();
+export const SaveByokConfigRequestSchema = IpcByokConfigSchema;
+export const StartCopilotAuthRequestSchema = z.undefined();
+export const PollCopilotAuthRequestSchema = z.object({
+  deviceCode: z.string().min(1),
+});
+
+export const CopilotAuthStartResponseSchema = z.object({
+  deviceCode: z.string().min(1),
+  userCode: z.string().min(1),
+  verificationUri: HttpsUrlSchema,
+  expiresIn: z.number().int().positive(),
+  interval: z.number().int().positive(),
+});
+export type CopilotAuthStartResponse = z.infer<typeof CopilotAuthStartResponseSchema>;
+
+export const CopilotAuthPollResponseSchema = z.object({
+  status: z.enum(['pending', 'slow_down', 'authorized', 'expired', 'denied', 'error']),
+  interval: z.number().int().positive().optional(),
+  error: z.string().optional(),
+});
+export type CopilotAuthPollResponse = z.infer<typeof CopilotAuthPollResponseSchema>;
+
+export const GetByokConfigResponseSchema = ByokConfigSchema.nullable();
+
 export interface NcLoadedView {
   readonly run: ComplianceRun;
   readonly nc: NcDocument;
@@ -260,6 +289,10 @@ export interface NtcInvokeResponseMap {
   readonly [IPC_CHANNELS.OPEN_PR]: { readonly acknowledged: boolean };
   readonly [IPC_CHANNELS.SET_SECRET]: { readonly configured: boolean };
   readonly [IPC_CHANNELS.GET_SECRET_STATUS]: { readonly configured: boolean };
+  readonly [IPC_CHANNELS.GET_BYOK_CONFIG]: ByokConfig | null;
+  readonly [IPC_CHANNELS.SAVE_BYOK_CONFIG]: ByokConfig;
+  readonly [IPC_CHANNELS.START_COPILOT_AUTH]: CopilotAuthStartResponse;
+  readonly [IPC_CHANNELS.POLL_COPILOT_AUTH]: CopilotAuthPollResponse;
 }
 
 /** Typed preload bridge contract exposed to `@ntc/ui` as `window.ntcApi`. */
@@ -305,5 +338,9 @@ export interface NtcDesktopApi {
   getSecretStatus(request: { readonly key: SecretKeyTarget }): Promise<{
     readonly configured: boolean;
   }>;
+  getByokConfig(): Promise<ByokConfig | null>;
+  saveByokConfig(config: ByokConfig): Promise<ByokConfig>;
+  startCopilotAuth(): Promise<CopilotAuthStartResponse>;
+  pollCopilotAuth(request: { readonly deviceCode: string }): Promise<CopilotAuthPollResponse>;
   onRunProgress(listener: (event: RunProgressEvent) => void): () => void;
 }

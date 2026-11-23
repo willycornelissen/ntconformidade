@@ -560,4 +560,80 @@ function buildMinimalValidPdf(text: string): Buffer {
     expect(callArg?.resolvedArtifacts?.xsdDir).toBe(imported.xsdDir);
     db.close();
   });
+
+  it('IPC-07: persists BYOK config and completes Copilot OAuth device flow storing secret without leaking token over IPC', async () => {
+    const dir = createTempDir();
+    const db = openDatabase(path.join(dir, 'ntc.sqlite'));
+    const secretStore = new SafeStorageSecretStore({
+      vaultFilePath: path.join(dir, 'secrets.enc.json'),
+      backend: {
+        isEncryptionAvailable: () => true,
+        encryptString: (v) => Buffer.from(v, 'utf8'),
+        decryptString: (b) => b.toString('utf8'),
+      },
+    });
+
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes('/login/device/code')) {
+        return new Response(
+          JSON.stringify({
+            device_code: 'dev-secret-999',
+            user_code: 'WXYZ-5678',
+            verification_uri: 'https://github.com/login/device',
+            expires_in: 900,
+            interval: 5,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ access_token: 'ghu_never_return_over_ipc' }), { status: 200 });
+    });
+
+    const controller = createDesktopIpcController({
+      db,
+      secretStore,
+      dataDir: dir,
+      oracleJarPath: '/opt/xsd-oracle.jar',
+      allowedSenderOrigins: ['file:///app/'],
+      fetchFn,
+      emitProgress: () => undefined,
+      orchestrator: {
+        generateDraftNc: async () => {
+          throw new Error('unused');
+        },
+        approveAndRunCompliance: async () => {
+          throw new Error('unused');
+        },
+      },
+    });
+    const trusted: IpcMainEventLike = { senderFrame: { url: 'file:///app/index.html' } };
+
+    expect(await controller.dispatch(IPC_CHANNELS.GET_BYOK_CONFIG, trusted, undefined)).toBeNull();
+    const saved = await controller.dispatch(IPC_CHANNELS.SAVE_BYOK_CONFIG, trusted, {
+      provider: 'github-copilot',
+      modelId: 'gpt-4o',
+      operatorName: 'Willy',
+      secretKeyRef: 'ntc:llm:github-copilot',
+      authMode: 'copilot-oauth-device',
+    });
+    expect(saved).toMatchObject({ provider: 'github-copilot', authMode: 'copilot-oauth-device' });
+    expect(await controller.dispatch(IPC_CHANNELS.GET_BYOK_CONFIG, trusted, undefined)).toEqual(saved);
+
+    const start = (await controller.dispatch(IPC_CHANNELS.START_COPILOT_AUTH, trusted, undefined)) as {
+      deviceCode: string;
+      userCode: string;
+      verificationUri: string;
+    };
+    expect(start.userCode).toBe('WXYZ-5678');
+
+    const poll = (await controller.dispatch(IPC_CHANNELS.POLL_COPILOT_AUTH, trusted, {
+      deviceCode: start.deviceCode,
+    })) as Record<string, unknown>;
+    expect(poll).toEqual({ status: 'authorized' });
+    expect(JSON.stringify(poll)).not.toContain('ghu_never_return_over_ipc');
+    expect(await secretStore.getSecret('ntc:llm:github-copilot')).toBe('ghu_never_return_over_ipc');
+
+    db.close();
+  });
 });

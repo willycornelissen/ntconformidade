@@ -69,6 +69,7 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
     expect(migrations.map((m) => m.version)).toEqual([
       '001_initial.sql',
       '002_repo_metadata_and_locks.sql',
+      '003_app_settings.sql',
     ]);
 
     ntcDb.close();
@@ -78,7 +79,7 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
     const migrationsAfter = reopened.rawDb
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as Array<{ version: string }>;
-    expect(migrationsAfter).toHaveLength(2);
+    expect(migrationsAfter).toHaveLength(3);
   });
 
   it('SQ-03 e SQ-04 semeiam os 8 DFes preservando edições existentes e NFCe isolado', async () => {
@@ -273,6 +274,7 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
       /adulteração|ausente/i,
     );
     await fs.writeFile(path.join(customMigDir, '002_repo_metadata_and_locks.sql'), '-- dummy', 'utf8');
+    await fs.writeFile(path.join(customMigDir, '003_app_settings.sql'), '-- dummy', 'utf8');
     expect(() => openDatabase(path.join(dir, 'nested', 'ntc.sqlite'), { migrationsDir: customMigDir })).toThrow(
       /integridade|checksum/i,
     );
@@ -324,5 +326,24 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
         ncJsonPath: 'ncs/other.json',
       }),
     ).toThrow(/terminal|FAILED/i);
+  });
+
+  it('SQ-15 persiste e recupera configuração BYOK em app_settings', async () => {
+    const { dbPath, ntcDb } = await createTempDb();
+    expect(ntcDb.getByokConfig()).toBeNull();
+
+    const saved = ntcDb.saveByokConfig({
+      provider: 'github-copilot',
+      modelId: 'gpt-4o',
+      operatorName: 'Willy',
+      secretKeyRef: 'ntc:llm:github-copilot',
+      authMode: 'copilot-oauth-device',
+    });
+    expect(saved.provider).toBe('github-copilot');
+    ntcDb.close();
+
+    const reopened = openDatabase(dbPath);
+    openHandles.push(reopened);
+    expect(reopened.getByokConfig()).toEqual(saved);
   });
 });

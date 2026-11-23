@@ -280,4 +280,82 @@ describe('App Shell & Typed IPC Client', () => {
     await user.click(await screen.findByRole('button', { name: 'Concluir e voltar à Tela Inicial' }));
     expect(await screen.findByRole('heading', { name: /Notas Técnicas por Documento Fiscal/i })).toBeInTheDocument();
   });
+
+  it('UI-05: restores persisted GitHub Copilot BYOK config on mount and forwards it to checkCompliance', async () => {
+    const user = userEvent.setup();
+    const persistedCopilot = {
+      provider: 'github-copilot' as const,
+      modelId: 'gpt-4o',
+      operatorName: 'Willy',
+      secretKeyRef: 'ntc:llm:github-copilot' as const,
+      authMode: 'copilot-oauth-device' as const,
+    };
+    const checkCompliance = vi.fn(async () => ({
+      run: {
+        runId: 'run-cop-1',
+        dfe: 'NFe' as const,
+        ntId: 'NFe:2025.002:1.30',
+        status: 'DRAFT' as const,
+        failedStep: null,
+        errorMessage: null,
+        operatorName: 'Willy',
+        provider: 'github-copilot' as const,
+        modelId: 'gpt-4o',
+        baseCommitSha: '1'.repeat(40),
+        branchName: null,
+        ncJsonPath: 'NFe/NC.json',
+        prUrl: null,
+        tokenUsage: null,
+        createdAt: '2026-11-19T12:00:00.000Z',
+        updatedAt: '2026-11-19T12:00:00.000Z',
+      },
+      nc: {
+        nc_id: 'NC-1',
+        nt_ref: {
+          dfe: 'NFe' as const,
+          nt_number: '2025.002',
+          nt_version: '1.30',
+          published_date: '2025-10-15',
+          pdf_sha256: 'a'.repeat(64),
+        },
+        base_commit_sha: '1'.repeat(40),
+        no_structural_gaps: false,
+        items: [],
+        created_at: '2026-11-19T12:00:00.000Z',
+        updated_at: '2026-11-19T12:00:00.000Z',
+      },
+      xsdDir: '/tmp/xsd',
+    }));
+
+    const api = makeMockApi({
+      getByokConfig: vi.fn(async () => persistedCopilot),
+      listNts: vi.fn(async () => [
+        {
+          id: 'NFe:2025.002:1.30',
+          dfe: 'NFe' as const,
+          ntNumber: '2025.002',
+          ntVersion: '1.30',
+          publishedDate: '2025-10-15',
+          homologDate: null,
+          prodDate: null,
+          pdfUrl: null,
+          xsdUrl: null,
+          pdfSha256: 'a'.repeat(64),
+          sourceStatus: 'DOWNLOADED' as const,
+          fetchedAt: '2026-11-19T12:00:00.000Z',
+        },
+      ]),
+      checkCompliance,
+    });
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole('button', { name: /^NFe\b/i }));
+    await user.click(await screen.findByRole('button', { name: /Verificar conformidade/i }));
+
+    expect(checkCompliance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        byokConfig: persistedCopilot,
+      }),
+    );
+  });
 });

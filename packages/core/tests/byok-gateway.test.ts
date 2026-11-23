@@ -11,6 +11,10 @@ import { ByokLlmGateway, ByokTokenLimitError } from '../src/llm/byok-gateway.js'
 import { GeminiAdapter } from '../src/llm/adapters/gemini.js';
 import { OpenAiCompatibleAdapter } from '../src/llm/adapters/openai-compatible.js';
 import { GithubCopilotAdapter } from '../src/llm/adapters/github-copilot.js';
+import {
+  pollCopilotDeviceToken,
+  requestCopilotDeviceCode,
+} from '../src/llm/copilot-oauth.js';
 import { postJsonWithManualRedirects, type FetchFn } from '../src/llm/http-client.js';
 import { DlpViolationError } from '../src/privacy/dlp-filter.js';
 
@@ -199,10 +203,29 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
     expect(res.usage.totalTokens).toBe(65);
   });
 
-  it('LG-03: GithubCopilotAdapter routes both auth modes to their default endpoints', async () => {
-    const urls: string[] = [];
-    const fetchFn: FetchFn = async (url) => {
-      urls.push(url);
+  it('LG-03: GithubCopilotAdapter routes github-models-pat directly and exchanges OAuth token for Copilot session with caching & 401 refresh', async () => {
+    const calls: Array<{ url: string; auth: string }> = [];
+    let tokenIssueCount = 0;
+    let rejectNextSession = false;
+
+    const fetchFn: FetchFn = async (url, init) => {
+      const headers = (init.headers ?? {}) as Record<string, string>;
+      calls.push({ url, auth: headers['Authorization'] ?? '' });
+      if (url === 'https://api.github.com/copilot_internal/v2/token') {
+        tokenIssueCount += 1;
+        return new Response(
+          JSON.stringify({
+            token: `tid=copilot_session_${tokenIssueCount};exp=9999999999`,
+            expires_at: Math.floor(Date.now() / 1000) + 1800,
+            endpoints: { api: 'https://api.githubcopilot.com' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (rejectNextSession) {
+        rejectNextSession = false;
+        return new Response('session expired', { status: 401 });
+      }
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: '{"edits":[],"creates":[]}' } }],
@@ -241,13 +264,76 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
         systemPrompt: 'sys',
         userPrompt: 'usr',
       },
-      'gho_oauth_token',
+      'ghu_oauth_token',
     );
 
-    expect(urls).toEqual([
-      'https://models.inference.ai.azure.com/chat/completions',
-      'https://api.githubcopilot.com/chat/completions',
+    // Second call reuses cached Copilot session token without re-calling /copilot_internal/v2/token
+    await adapter.completeStructured(
+      {
+        config: {
+          provider: 'github-copilot',
+          modelId: 'claude-3.7-sonnet',
+          operatorName: 'Op',
+          secretKeyRef: 'ntc:llm:github-copilot',
+          authMode: 'copilot-oauth-device',
+        },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+      },
+      'ghu_oauth_token',
+    );
+
+    // 401 from Copilot chat endpoint evicts cache and refreshes session token once
+    rejectNextSession = true;
+    await adapter.completeStructured(
+      {
+        config: {
+          provider: 'github-copilot',
+          modelId: 'claude-3.7-sonnet',
+          operatorName: 'Op',
+          secretKeyRef: 'ntc:llm:github-copilot',
+          authMode: 'copilot-oauth-device',
+        },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+      },
+      'ghu_oauth_token',
+    );
+
+    expect(calls).toEqual([
+      { url: 'https://models.inference.ai.azure.com/chat/completions', auth: 'Bearer ghp_pat_token' },
+      { url: 'https://api.github.com/copilot_internal/v2/token', auth: 'token ghu_oauth_token' },
+      { url: 'https://api.githubcopilot.com/chat/completions', auth: 'Bearer tid=copilot_session_1;exp=9999999999' },
+      { url: 'https://api.githubcopilot.com/chat/completions', auth: 'Bearer tid=copilot_session_1;exp=9999999999' },
+      { url: 'https://api.githubcopilot.com/chat/completions', auth: 'Bearer tid=copilot_session_1;exp=9999999999' },
+      { url: 'https://api.github.com/copilot_internal/v2/token', auth: 'token ghu_oauth_token' },
+      { url: 'https://api.githubcopilot.com/chat/completions', auth: 'Bearer tid=copilot_session_2;exp=9999999999' },
     ]);
+
+    const startRes = await requestCopilotDeviceCode(async () =>
+      new Response(
+        JSON.stringify({
+          device_code: 'dev-code-1',
+          user_code: 'ABCD-1234',
+          verification_uri: 'https://github.com/login/device',
+          expires_in: 900,
+          interval: 5,
+        }),
+        { status: 200 },
+      ),
+    );
+    expect(startRes.userCode).toBe('ABCD-1234');
+    expect(startRes.verificationUri).toBe('https://github.com/login/device');
+
+    const pendingRes = await pollCopilotDeviceToken('dev-code-1', async () =>
+      new Response(JSON.stringify({ error: 'authorization_pending' }), { status: 200 }),
+    );
+    expect(pendingRes).toEqual({ status: 'pending' });
+
+    const authRes = await pollCopilotDeviceToken('dev-code-1', async () =>
+      new Response(JSON.stringify({ access_token: 'ghu_real_user_token' }), { status: 200 }),
+    );
+    expect(authRes).toEqual({ status: 'authorized', accessToken: 'ghu_real_user_token' });
   });
 
   it('LG-04: http-client uses redirect:manual, blocks SSRF redirects, and scrubs secrets on errors', async () => {

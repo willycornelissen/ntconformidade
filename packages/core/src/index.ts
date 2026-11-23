@@ -8,6 +8,7 @@ export * from './pdf/nt-pdf-extractor.js';
 export * from './privacy/dlp-filter.js';
 export * from './oracle/xsd-ast-diff.js';
 export * from './llm/http-client.js';
+export * from './llm/copilot-oauth.js';
 export * from './llm/prompt-builder.js';
 export { GeminiAdapter } from './llm/adapters/gemini.js';
 export { OpenAiCompatibleAdapter } from './llm/adapters/openai-compatible.js';

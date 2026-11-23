@@ -105,4 +105,66 @@ describe('SettingsByokDoctor', () => {
     );
     expect(await screen.findByLabelText(/Modo Autenticação Copilot/i)).toBeInTheDocument();
   });
+
+  it('UI-SD-03: saves BYOK config and completes GitHub Copilot OAuth Device login polling', async () => {
+    const user = userEvent.setup();
+    let copilotConfigured = false;
+    let pollCalls = 0;
+
+    const saveByokConfig = vi.fn(async (cfg: ByokConfig) => cfg);
+    const startCopilotAuth = vi.fn(async () => ({
+      deviceCode: 'dev-ui-1',
+      userCode: 'COPILOT-99',
+      verificationUri: 'https://github.com/login/device',
+      expiresIn: 900,
+      interval: 1,
+    }));
+    const pollCopilotAuth = vi.fn(async () => {
+      pollCalls += 1;
+      if (pollCalls === 1) {
+        return { status: 'pending' as const };
+      }
+      copilotConfigured = true;
+      return { status: 'authorized' as const };
+    });
+
+    const api = makeMockApi({
+      getSecretStatus: vi.fn(async ({ key }) => ({
+        configured: key === 'ntc:llm:github-copilot' ? copilotConfigured : false,
+      })),
+      saveByokConfig,
+      startCopilotAuth,
+      pollCopilotAuth,
+    });
+
+    const copilotConfig: ByokConfig = {
+      provider: 'github-copilot',
+      modelId: 'gpt-4o',
+      operatorName: 'Willy',
+      secretKeyRef: 'ntc:llm:github-copilot',
+      authMode: 'copilot-oauth-device',
+    };
+
+    render(
+      <SettingsByokDoctor
+        api={api}
+        byokConfig={copilotConfig}
+        onChangeConfig={() => undefined}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /Salvar Configuração BYOK/i }));
+    expect(saveByokConfig).toHaveBeenCalledWith(copilotConfig);
+    expect(await screen.findByText(/Configuração BYOK \(github-copilot \/ gpt-4o\) salva/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Conectar com GitHub Copilot \(OAuth Device\)/i }));
+    expect(startCopilotAuth).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('COPILOT-99')).toBeInTheDocument();
+
+    expect(
+      await screen.findByText(/GitHub Copilot autorizado e configuração BYOK salva/i, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(pollCalls).toBe(2);
+    expect(await screen.findByLabelText(/Chave\/Token github-copilot \(Configurado\)/i)).toBeInTheDocument();
+  });
 });

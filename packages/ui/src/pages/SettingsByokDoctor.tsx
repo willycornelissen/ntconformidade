@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ByokConfig,
+  CopilotAuthStartResponse,
   DoctorReport,
   NtcDesktopApi,
   SecretKeyTarget,
@@ -55,11 +56,13 @@ function ByokConfigSection({
   busy,
   onProviderChange,
   onChangeConfig,
+  onSaveConfig,
 }: {
   readonly byokConfig: ByokConfig;
   readonly busy: boolean;
   readonly onProviderChange: (provider: ByokConfig['provider']) => void;
   readonly onChangeConfig: (next: ByokConfig) => void;
+  readonly onSaveConfig: () => void;
 }) {
   return (
     <div className="card" style={{ marginBottom: '1rem' }}>
@@ -190,30 +193,45 @@ function ByokConfigSection({
           </>
         )}
       </div>
+      <div className="toolbar" style={{ marginTop: '0.75rem' }}>
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={onSaveConfig}>
+          Salvar Configuração BYOK
+        </button>
+      </div>
     </div>
   );
 }
 
 function SecretVaultSection({
   provider,
+  isCopilotOAuthMode,
   secretStatus,
   currentLlmSecretKey,
   giteaPatInput,
   llmKeyInput,
+  copilotSession,
   busy,
   onChangeGiteaPat,
   onChangeLlmKey,
   onSaveSecret,
+  onStartCopilotLogin,
+  onCancelCopilotLogin,
+  onCopyCopilotCode,
 }: {
   readonly provider: ByokConfig['provider'];
+  readonly isCopilotOAuthMode: boolean;
   readonly secretStatus: Record<string, boolean>;
   readonly currentLlmSecretKey: SecretKeyTarget;
   readonly giteaPatInput: string;
   readonly llmKeyInput: string;
+  readonly copilotSession: CopilotAuthStartResponse | null;
   readonly busy: boolean;
   readonly onChangeGiteaPat: (v: string) => void;
   readonly onChangeLlmKey: (v: string) => void;
   readonly onSaveSecret: (key: SecretKeyTarget, value: string, clearFn: () => void) => void;
+  readonly onStartCopilotLogin: () => void;
+  readonly onCancelCopilotLogin: () => void;
+  readonly onCopyCopilotCode: (code: string) => void;
 }) {
   return (
     <div className="card" style={{ marginBottom: '1rem' }}>
@@ -268,6 +286,40 @@ function SecretVaultSection({
           </button>
         </form>
       </div>
+
+      {isCopilotOAuthMode && (
+        <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
+          {!copilotSession ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={onStartCopilotLogin}
+            >
+              Conectar com GitHub Copilot (OAuth Device)
+            </button>
+          ) : (
+            <div className="alert alert-warn" role="status">
+              <p style={{ margin: '0 0 0.4rem 0' }}>
+                Abra <strong>{copilotSession.verificationUri}</strong> no navegador e informe o código:{' '}
+                <code>{copilotSession.userCode}</code>
+              </p>
+              <div className="toolbar">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => onCopyCopilotCode(copilotSession.userCode)}
+                >
+                  Copiar Código
+                </button>
+                <button type="button" className="btn" onClick={onCancelCopilotLogin}>
+                  Cancelar Login
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -370,10 +422,16 @@ export function SettingsByokDoctor({
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [copilotSession, setCopilotSession] = useState<CopilotAuthStartResponse | null>(null);
   const [busy, setBusy] = useState(false);
 
   const isMountedRef = useRef(true);
   const statusSeqRef = useRef(0);
+  const byokConfigRef = useRef(byokConfig);
+
+  useEffect(() => {
+    byokConfigRef.current = byokConfig;
+  }, [byokConfig]);
 
   const refreshSecretStatuses = useCallback(async () => {
     const seq = ++statusSeqRef.current;
@@ -399,12 +457,134 @@ export function SettingsByokDoctor({
     };
   }, [refreshSecretStatuses]);
 
+  useEffect(() => {
+    if (!copilotSession) {
+      return;
+    }
+    let cancelled = false;
+    let timerId: number | undefined;
+    let intervalMs = Math.max(1000, copilotSession.interval * 1000);
+    const expiresAtMs = Date.now() + copilotSession.expiresIn * 1000;
+
+    const scheduleNext = (): void => {
+      if (cancelled) {
+        return;
+      }
+      timerId = window.setTimeout(() => {
+        void pollOnce();
+      }, intervalMs);
+    };
+
+    const pollOnce = async (): Promise<void> => {
+      if (cancelled) {
+        return;
+      }
+      if (Date.now() >= expiresAtMs) {
+        if (!cancelled && isMountedRef.current) {
+          setCopilotSession(null);
+          setErrorMessage('Código OAuth do GitHub Copilot expirado. Tente conectar novamente.');
+        }
+        return;
+      }
+      try {
+        const res = await api.pollCopilotAuth({ deviceCode: copilotSession.deviceCode });
+        if (cancelled || !isMountedRef.current) {
+          return;
+        }
+        if (res.status === 'authorized') {
+          await refreshSecretStatuses();
+          const saved = await api.saveByokConfig(byokConfigRef.current);
+          if (!cancelled && isMountedRef.current) {
+            onChangeConfig(saved);
+            setCopilotSession(null);
+            setStatusMessage('GitHub Copilot autorizado e configuração BYOK salva.');
+          }
+          return;
+        }
+        if (res.status === 'pending') {
+          scheduleNext();
+          return;
+        }
+        if (res.status === 'slow_down') {
+          intervalMs = res.interval ? res.interval * 1000 : intervalMs + 5000;
+          scheduleNext();
+          return;
+        }
+        setCopilotSession(null);
+        setErrorMessage(res.error ?? 'Falha na autorização do GitHub Copilot.');
+      } catch (err: unknown) {
+        if (!cancelled && isMountedRef.current) {
+          setCopilotSession(null);
+          setErrorMessage(toErrorMessage(err));
+        }
+      }
+    };
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [api, copilotSession, onChangeConfig, refreshSecretStatuses]);
+
   function handleProviderChange(provider: ByokConfig['provider']): void {
     setLlmKeyInput('');
+    setCopilotSession(null);
     setDoctorReport(null);
     setStatusMessage(null);
     setErrorMessage(null);
     onChangeConfig(buildSwitchedConfig(byokConfig, provider));
+  }
+
+  async function handleSaveByokConfig(): Promise<void> {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    setBusy(true);
+    try {
+      const saved = await api.saveByokConfig(byokConfig);
+      if (isMountedRef.current) {
+        onChangeConfig(saved);
+        setStatusMessage(`Configuração BYOK (${saved.provider} / ${saved.modelId}) salva.`);
+      }
+    } catch (err: unknown) {
+      if (isMountedRef.current) {
+        setErrorMessage(toErrorMessage(err));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleStartCopilotLogin(): Promise<void> {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    setBusy(true);
+    try {
+      const session = await api.startCopilotAuth();
+      if (isMountedRef.current) {
+        setCopilotSession(session);
+        setStatusMessage(`Aguardando autorização no GitHub para o código ${session.userCode}.`);
+      }
+    } catch (err: unknown) {
+      if (isMountedRef.current) {
+        setErrorMessage(toErrorMessage(err));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  function handleCopyCopilotCode(code: string): void {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(code).catch(() => undefined);
+      setStatusMessage(`Código ${code} copiado para a área de transferência.`);
+    }
   }
 
   async function saveSecretInput(
@@ -508,20 +688,35 @@ export function SettingsByokDoctor({
         busy={busy}
         onProviderChange={handleProviderChange}
         onChangeConfig={onChangeConfig}
+        onSaveConfig={() => {
+          void handleSaveByokConfig();
+        }}
       />
 
       <SecretVaultSection
         provider={byokConfig.provider}
+        isCopilotOAuthMode={
+          byokConfig.provider === 'github-copilot' && byokConfig.authMode === 'copilot-oauth-device'
+        }
         secretStatus={secretStatus}
         currentLlmSecretKey={currentLlmSecretKey}
         giteaPatInput={giteaPatInput}
         llmKeyInput={llmKeyInput}
+        copilotSession={copilotSession}
         busy={busy}
         onChangeGiteaPat={setGiteaPatInput}
         onChangeLlmKey={setLlmKeyInput}
         onSaveSecret={(k, v, clearFn) => {
           void saveSecretInput(k, v, clearFn);
         }}
+        onStartCopilotLogin={() => {
+          void handleStartCopilotLogin();
+        }}
+        onCancelCopilotLogin={() => {
+          setCopilotSession(null);
+          setStatusMessage('Login OAuth do GitHub Copilot cancelado.');
+        }}
+        onCopyCopilotCode={handleCopyCopilotCode}
       />
 
       <DoctorDiagnosticsSection

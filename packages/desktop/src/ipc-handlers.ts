@@ -11,7 +11,11 @@ import {
   CheckComplianceResponseSchema,
   ComplianceOrchestrator,
   ConfirmPreBuildDiffRequestSchema,
+  CopilotAuthPollResponseSchema,
+  CopilotAuthStartResponseSchema,
   DoctorReportIpcSchema,
+  GetByokConfigRequestSchema,
+  GetByokConfigResponseSchema,
   GetNcRequestSchema,
   GetPendingGateRequestSchema,
   GetSecretStatusRequestSchema,
@@ -30,12 +34,15 @@ import {
   NcLoadedViewSchema,
   OpenPrRequestSchema,
   PendingApprovalGateSchema,
+  PollCopilotAuthRequestSchema,
   RunDoctorRequestSchema,
   RunProgressIpcSchema,
+  SaveByokConfigRequestSchema,
   SaveNcRequestSchema,
   SaveRepoInputSchema,
   SecretStatusResponseSchema,
   SetSecretRequestSchema,
+  StartCopilotAuthRequestSchema,
   SyncSvrsRequestSchema,
   SyncSvrsResponseSchema,
   WorktreeManager,
@@ -45,7 +52,9 @@ import {
   importManualNt,
   llmSecretKey,
   loadNcDocument,
+  pollCopilotDeviceToken,
   renderNcMarkdown,
+  requestCopilotDeviceCode,
   resolveContainedNoSymlinkPath,
   runDoctor,
   sanitizeLogMessage,
@@ -573,6 +582,32 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
     [IPC_CHANNELS.GET_SECRET_STATUS]: async (raw) => {
       const { key } = GetSecretStatusRequestSchema.parse(raw);
       return SecretStatusResponseSchema.parse(await deps.secretStore.getSecretStatus(key));
+    },
+    [IPC_CHANNELS.GET_BYOK_CONFIG]: async (raw) => {
+      GetByokConfigRequestSchema.parse(raw);
+      return GetByokConfigResponseSchema.parse(deps.db.getByokConfig());
+    },
+    [IPC_CHANNELS.SAVE_BYOK_CONFIG]: async (raw) => {
+      const config = SaveByokConfigRequestSchema.parse(raw);
+      assertBoundByokSecretKeyRef(config);
+      return SaveByokConfigRequestSchema.parse(deps.db.saveByokConfig(config));
+    },
+    [IPC_CHANNELS.START_COPILOT_AUTH]: async (raw) => {
+      StartCopilotAuthRequestSchema.parse(raw);
+      return CopilotAuthStartResponseSchema.parse(await requestCopilotDeviceCode(deps.fetchFn));
+    },
+    [IPC_CHANNELS.POLL_COPILOT_AUTH]: async (raw) => {
+      const { deviceCode } = PollCopilotAuthRequestSchema.parse(raw);
+      const outcome = await pollCopilotDeviceToken(deviceCode, deps.fetchFn);
+      if (outcome.status === 'authorized' && outcome.accessToken) {
+        await deps.secretStore.setSecret(llmSecretKey('github-copilot'), outcome.accessToken);
+        return CopilotAuthPollResponseSchema.parse({ status: 'authorized' });
+      }
+      return CopilotAuthPollResponseSchema.parse({
+        status: outcome.status,
+        ...(outcome.interval !== undefined ? { interval: outcome.interval } : {}),
+        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+      });
     },
   };
 

@@ -6,11 +6,13 @@ import Database from 'better-sqlite3';
 import { z } from 'zod';
 import {
   assertValidRunTransition,
+  ByokConfigSchema,
   ComplianceRunSchema,
   DfeRegistrySchema,
   DfeRepoEntrySchema,
   NtCatalogEntrySchema,
   TokenUsageSchema,
+  type ByokConfig,
   type ComplianceRun,
   type DfeCode,
   type DfeRepoEntry,
@@ -83,6 +85,8 @@ export interface NtcDatabase {
   acquireRepoLock(dfe: DfeCode, runId: string): void;
   getRepoLock(dfe: DfeCode): { runId: string; lockedAt: string } | null;
   releaseRepoLock(dfe: DfeCode, runId: string): boolean;
+  getByokConfig(): ByokConfig | null;
+  saveByokConfig(config: ByokConfig): ByokConfig;
 }
 
 const MigrationRowSchema = z.object({ version: z.string(), checksum_sha256: z.string() });
@@ -301,6 +305,28 @@ function createDatabaseApi(rawDb: Database.Database): NtcDatabase {
     acquireRepoLock: (dfe, runId) => lockRepo(rawDb, dfe, runId),
     getRepoLock: (dfe) => fetchRepoLock(rawDb, dfe),
     releaseRepoLock: (dfe, runId) => unlockRepo(rawDb, dfe, runId),
+    getByokConfig: () => {
+      const row = rawDb.prepare("SELECT value_json FROM app_settings WHERE key = 'byok_config'").get() as
+        | { value_json: string }
+        | undefined;
+      if (!row) {
+        return null;
+      }
+      return ByokConfigSchema.parse(JSON.parse(row.value_json));
+    },
+    saveByokConfig: (config) => {
+      const validated = ByokConfigSchema.parse(config);
+      rawDb
+        .prepare(
+          `INSERT INTO app_settings (key, value_json, updated_at)
+           VALUES ('byok_config', ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             value_json = excluded.value_json,
+             updated_at = excluded.updated_at`,
+        )
+        .run(JSON.stringify(validated), new Date().toISOString());
+      return validated;
+    },
   };
 }
 

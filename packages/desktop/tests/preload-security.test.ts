@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '@ntc/core';
 import {
   buildHardenedWebPreferences,
   buildMainWindowOptions,
+  configureLinuxKeyringBackend,
   isAllowedNavigationUrl,
   resolveDevServerUrl,
   resolveNtcDataDir,
@@ -52,6 +53,10 @@ describe('Preload Bridge & Electron BrowserWindow Security', () => {
       'openPr',
       'setSecret',
       'getSecretStatus',
+      'getByokConfig',
+      'saveByokConfig',
+      'startCopilotAuth',
+      'pollCopilotAuth',
       'onRunProgress',
     ];
     for (const method of expectedMethods) {
@@ -116,6 +121,33 @@ describe('Preload Bridge & Electron BrowserWindow Security', () => {
     const windowOpts = buildMainWindowOptions('/opt/app/preload/preload.cjs');
     expect(windowOpts.autoHideMenuBar).toBe(true);
     expect(windowOpts.webPreferences).toEqual(prefs);
+
+    const appended: Array<[string, string | undefined]> = [];
+    const applied = configureLinuxKeyringBackend({
+      platform: 'linux',
+      env: { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
+      commandLine: {
+        hasSwitch: () => false,
+        appendSwitch: (k, v) => appended.push([k, v]),
+      },
+    });
+    expect(applied).toBe(true);
+    expect(appended).toEqual([['password-store', 'gnome-libsecret']]);
+
+    expect(
+      configureLinuxKeyringBackend({
+        platform: 'linux',
+        env: { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', XDG_CURRENT_DESKTOP: 'GNOME' },
+        commandLine: { hasSwitch: () => false, appendSwitch: () => undefined },
+      }),
+    ).toBe(false);
+    expect(
+      configureLinuxKeyringBackend({
+        platform: 'win32',
+        env: { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' },
+        commandLine: { hasSwitch: () => false, appendSwitch: () => undefined },
+      }),
+    ).toBe(false);
 
     expect(STRICT_CSP_HEADER).toContain("default-src 'self'");
     expect(STRICT_CSP_HEADER).toContain("object-src 'none'");

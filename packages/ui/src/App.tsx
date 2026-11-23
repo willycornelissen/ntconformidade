@@ -31,12 +31,22 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
 
   useEffect(() => {
     isMountedRef.current = true;
+    let cancelled = false;
+    void api
+      .getByokConfig()
+      .then((savedConfig) => {
+        if (!cancelled && isMountedRef.current && savedConfig) {
+          setByokConfig(savedConfig);
+        }
+      })
+      .catch(() => undefined);
     const unsubscribe = api.onRunProgress((event) => {
       if (isMountedRef.current) {
         setLatestProgress(event);
       }
     });
     return () => {
+      cancelled = true;
       isMountedRef.current = false;
       unsubscribe();
     };

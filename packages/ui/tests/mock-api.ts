@@ -29,6 +29,16 @@ export function makeMockApi(overrides: Partial<NtcDesktopApi> = {}): NtcDesktopA
     openPr: vi.fn(async () => ({ acknowledged: true })),
     setSecret: vi.fn(async () => ({ configured: true })),
     getSecretStatus: vi.fn(async () => ({ configured: false })),
+    getByokConfig: vi.fn(async () => null),
+    saveByokConfig: vi.fn(async (cfg) => cfg),
+    startCopilotAuth: vi.fn(async () => ({
+      deviceCode: 'dev-code-mock',
+      userCode: 'MOCK-1234',
+      verificationUri: 'https://github.com/login/device',
+      expiresIn: 900,
+      interval: 1,
+    })),
+    pollCopilotAuth: vi.fn(async () => ({ status: 'pending' as const })),
     onRunProgress: vi.fn(() => () => undefined),
     ...overrides,
   };
