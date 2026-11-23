@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+    <NFe>
+        <infNFe versao="4.00" Id="NFe31250112345678000199550010000000011000000010">
+            <ide>
+                <natOp>VENDA</natOp>
+            </ide>
+            <emit>
+                <CNPJ>12345678000199</CNPJ>
+            </emit>
+            <det nItem="1">
+                <prod>
+                    <cProd>001</cProd>
+                    <vProd>100.5</vProd>
+                </prod>
+                <imposto>
+                    <ICMS>
+                        <ICMS00>
+                            <orig>0</orig>
+                            <CST>00</CST>
+                        </ICMS00>
+                    </ICMS>
+                </imposto>
+            </det>
+            <total>
+                <ICMSTot>
+                    <vNF>100.00</vNF>
+                </ICMSTot>
+            </total>
+        </infNFe>
+    </NFe>
+</nfeProc>

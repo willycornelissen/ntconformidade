@@ -1,0 +1,33 @@
+{
+  "name": "@ntc/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json && node -e \"import('node:fs').then(fs => { if (fs.existsSync('src/storage/migrations')) fs.cpSync('src/storage/migrations', 'dist/storage/migrations', { recursive: true }); })\"",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.2.0",
+    "cheerio": "^1.2.0",
+    "pdfjs-dist": "^6.5.438",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.10",
+    "@vitest/coverage-v8": "^3.2.7",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.7"
+  }
+}

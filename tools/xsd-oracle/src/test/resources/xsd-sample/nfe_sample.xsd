@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://www.portalfiscal.inf.br/nfe"
+           xmlns="http://www.portalfiscal.inf.br/nfe"
+           elementFormDefault="qualified">
+
+    <xs:include schemaLocation="tipos_sample.xsd"/>
+
+    <xs:element name="nfeProc">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="NFe" type="TNFe"/>
+                <xs:element name="protNFe" type="TProtNFe" minOccurs="0"/>
+            </xs:sequence>
+            <xs:attribute name="versao" type="TVerNFe" use="required"/>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:complexType name="TNFe">
+        <xs:sequence>
+            <xs:element name="infNFe">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="ide">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="cUF" type="TCodUF"/>
+                                    <xs:element name="natOp" type="xs:string"/>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="emit">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:choice>
+                                        <xs:element name="CNPJ" type="TCnpj"/>
+                                        <xs:element name="CPF" type="TCpf"/>
+                                    </xs:choice>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="det" maxOccurs="990">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="prod">
+                                        <xs:complexType>
+                                            <xs:sequence>
+                                                <xs:element name="cProd" type="xs:string"/>
+                                                <xs:element name="NVE" type="xs:string" minOccurs="0" maxOccurs="8"/>
+                                                <xs:element name="vProd" type="TDec_1302"/>
+                                            </xs:sequence>
+                                        </xs:complexType>
+                                    </xs:element>
+                                    <xs:element name="imposto">
+                                        <xs:complexType>
+                                            <xs:sequence>
+                                                <xs:element name="ICMS">
+                                                    <xs:complexType>
+                                                        <xs:sequence>
+                                                            <xs:element name="ICMS00">
+                                                                <xs:complexType>
+                                                                    <xs:sequence>
+                                                                        <xs:element name="orig" type="xs:string"/>
+                                                                        <xs:element name="CST" type="xs:string"/>
+                                                                    </xs:sequence>
+                                                                </xs:complexType>
+                                                            </xs:element>
+                                                        </xs:sequence>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                                <xs:element name="PIS" minOccurs="0">
+                                                    <xs:complexType>
+                                                        <xs:sequence>
+                                                            <xs:element name="PISAliq">
+                                                                <xs:complexType>
+                                                                    <xs:sequence>
+                                                                        <xs:element name="CST" type="xs:string"/>
+                                                                        <xs:element name="vPIS" type="TDec_1302"/>
+                                                                    </xs:sequence>
+                                                                </xs:complexType>
+                                                            </xs:element>
+                                                        </xs:sequence>
+                                                    </xs:complexType>
+                                                </xs:element>
+                                            </xs:sequence>
+                                        </xs:complexType>
+                                    </xs:element>
+                                </xs:sequence>
+                                <xs:attribute name="nItem" type="xs:string" use="required"/>
+                            </xs:complexType>
+                        </xs:element>
+                        <xs:element name="total">
+                            <xs:complexType>
+                                <xs:sequence>
+                                    <xs:element name="ICMSTot">
+                                        <xs:complexType>
+                                            <xs:sequence>
+                                                <xs:element name="vNF" type="TDec_1302"/>
+                                            </xs:sequence>
+                                        </xs:complexType>
+                                    </xs:element>
+                                </xs:sequence>
+                            </xs:complexType>
+                        </xs:element>
+                    </xs:sequence>
+                    <xs:attribute name="versao" type="TVerNFe" use="required"/>
+                    <xs:attribute name="Id" type="xs:ID" use="required"/>
+                </xs:complexType>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="TProtNFe">
+        <xs:sequence>
+            <xs:element name="infProt">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="nProt" type="xs:string" minOccurs="0"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>

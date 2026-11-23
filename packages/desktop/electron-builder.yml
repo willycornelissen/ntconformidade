@@ -1,0 +1,25 @@
+appId: br.gov.mg.fazenda.ntconformidade
+productName: NT Conformidade
+directories:
+  output: release
+files:
+  - dist/**/*
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/@ntc/*/{src,tests,coverage,tsconfig*.json,vitest.config.ts}"
+asarUnpack:
+  - "**/better-sqlite3/**"
+extraResources:
+  - from: "../../tools/xsd-oracle/target/xsd-oracle.jar"
+    to: "oracle/xsd-oracle.jar"
+  - from: "../../config/dfe-registry.default.json"
+    to: "config/dfe-registry.default.json"
+  - from: "../ui/dist"
+    to: "ui"
+win:
+  target:
+    - nsis
+    - portable
+linux:
+  target:
+    - AppImage
+    - tar.gz
