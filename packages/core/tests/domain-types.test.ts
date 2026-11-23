@@ -126,6 +126,9 @@ describe('Ciclo 1 — Contratos de Domínio, Estados e Portas', () => {
     expect(new Set(parsed.map((e) => e.repoSlug)).size).toBe(8);
     expect(parsed.find((e) => e.dfe === 'NFCe')?.repoSlug).toBe('nfce-parser');
     expect(parsed.find((e) => e.dfe === 'NFe')?.repoSlug).toBe('nfe-parser');
+    const gtve = parsed.find((e) => e.dfe === 'GTVe');
+    expect(gtve?.giteaUrl).toBe('https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/gtve-parser');
+    expect(gtve?.svrsRelativePath).toBe('/Cte/Documentos');
   });
 
   it('DT-05 rejeita DFe desconhecido, URL Gitea insegura e tagPrefix em minúsculas', () => {

@@ -12,8 +12,16 @@ import { ALL_DFES, isDfeCode, toErrorMessage } from '../api/helpers.js';
 export interface DashboardNtsProps {
   readonly api: NtcDesktopApi;
   readonly byokConfig: ByokConfig;
+  readonly homeResetKey?: number;
   readonly onDraftReady: (runId: string, xsdDir: string) => void;
   readonly onOpenRunDiff?: (runId: string) => void;
+}
+
+interface DfeGroupSummary {
+  readonly dfe: DfeCode;
+  readonly entries: readonly NtCatalogEntry[];
+  readonly latestEntry: NtCatalogEntry | null;
+  readonly syncError: string | null;
 }
 
 function sourceStatusBadgeClass(status: NtCatalogEntry['sourceStatus']): string {
@@ -24,6 +32,45 @@ function sourceStatusBadgeClass(status: NtCatalogEntry['sourceStatus']): string 
     return 'badge badge-warn';
   }
   return 'badge badge-ok';
+}
+
+function formatBrDate(rawDate: string): string {
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(rawDate.trim());
+  if (isoMatch?.[1] && isoMatch[2] && isoMatch[3]) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+  return rawDate;
+}
+
+function compareEntriesDesc(a: NtCatalogEntry, b: NtCatalogEntry): number {
+  const byDate = b.publishedDate.localeCompare(a.publishedDate);
+  if (byDate !== 0) {
+    return byDate;
+  }
+  const byNum = b.ntNumber.localeCompare(a.ntNumber, undefined, { numeric: true });
+  if (byNum !== 0) {
+    return byNum;
+  }
+  return b.ntVersion.localeCompare(a.ntVersion, undefined, { numeric: true });
+}
+
+function groupEntriesByDfe(
+  entries: readonly NtCatalogEntry[],
+  syncResults: readonly SvrsDfeSyncResult[],
+): readonly DfeGroupSummary[] {
+  const errorByDfe = new Map<DfeCode, string | null>();
+  for (const res of syncResults) {
+    errorByDfe.set(res.dfe, res.error);
+  }
+  return ALL_DFES.map((dfe) => {
+    const dfeEntries = entries.filter((entry) => entry.dfe === dfe).sort(compareEntriesDesc);
+    return {
+      dfe,
+      entries: dfeEntries,
+      latestEntry: dfeEntries[0] ?? null,
+      syncError: errorByDfe.get(dfe) ?? null,
+    };
+  });
 }
 
 function ManualNtImportForm(props: {
@@ -126,21 +173,64 @@ function ManualNtImportForm(props: {
   );
 }
 
+function DfeDocumentCardsGrid({
+  groups,
+  busy,
+  onSelectDfe,
+}: {
+  readonly groups: readonly DfeGroupSummary[];
+  readonly busy: boolean;
+  readonly onSelectDfe: (dfe: DfeCode) => void;
+}) {
+  return (
+    <div className="dfe-grid">
+      {groups.map((group) => (
+        <button
+          key={group.dfe}
+          type="button"
+          className="dfe-card"
+          disabled={busy}
+          onClick={() => onSelectDfe(group.dfe)}
+        >
+          <div className="dfe-card-header">
+            <span className="dfe-card-title">{group.dfe}</span>
+            <span className={group.entries.length > 0 ? 'badge badge-ok' : 'badge badge-warn'}>
+              {group.entries.length} {group.entries.length === 1 ? 'NT' : 'NTs'}
+            </span>
+          </div>
+          {group.latestEntry ? (
+            <span className="dfe-card-meta">
+              Última: NT {group.latestEntry.ntNumber} ({group.latestEntry.ntVersion}) —{' '}
+              {formatBrDate(group.latestEntry.publishedDate)}
+            </span>
+          ) : (
+            <span className="dfe-card-meta">Nenhuma NT em cache.</span>
+          )}
+          {group.syncError && (
+            <span className="badge badge-danger">Erro coleta: {group.syncError}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function NtCatalogTable({
+  dfe,
   entries,
   busy,
   onCheckCompliance,
 }: {
+  readonly dfe: DfeCode;
   readonly entries: readonly NtCatalogEntry[];
   readonly busy: boolean;
   readonly onCheckCompliance: (entry: NtCatalogEntry) => void;
 }) {
   return (
     <table className="data-table">
-      <caption className="sr-only">Notas Técnicas cacheadas</caption>
+      <caption className="sr-only">Notas Técnicas de {dfe}</caption>
       <thead>
         <tr>
-          <th scope="col">DFe</th>
           <th scope="col">NT</th>
           <th scope="col">Versão</th>
           <th scope="col">Publicação</th>
@@ -151,15 +241,14 @@ function NtCatalogTable({
       <tbody>
         {entries.length === 0 ? (
           <tr>
-            <td colSpan={6}>Nenhuma Nota Técnica encontrada no cache.</td>
+            <td colSpan={5}>Nenhuma Nota Técnica encontrada para {dfe}.</td>
           </tr>
         ) : (
           entries.map((entry) => (
             <tr key={entry.id}>
-              <td>{entry.dfe}</td>
               <td>{entry.ntNumber}</td>
               <td>{entry.ntVersion}</td>
-              <td>{entry.publishedDate}</td>
+              <td>{formatBrDate(entry.publishedDate)}</td>
               <td>
                 <span className={sourceStatusBadgeClass(entry.sourceStatus)}>
                   {entry.sourceStatus}
@@ -237,12 +326,18 @@ function RecentRunsTable({
   );
 }
 
-export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: DashboardNtsProps) {
+export function DashboardNts({
+  api,
+  byokConfig,
+  homeResetKey,
+  onDraftReady,
+  onOpenRunDiff,
+}: DashboardNtsProps) {
   const [entries, setEntries] = useState<readonly NtCatalogEntry[]>([]);
   const [runs, setRuns] = useState<readonly ComplianceRun[]>([]);
   const [syncResults, setSyncResults] = useState<readonly SvrsDfeSyncResult[]>([]);
   const [manualXsdMap, setManualXsdMap] = useState<Readonly<Record<string, string>>>({});
-  const [dfeFilter, setDfeFilter] = useState<'ALL' | DfeCode>('ALL');
+  const [selectedDfe, setSelectedDfe] = useState<DfeCode | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -258,6 +353,14 @@ export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: D
 
   const isMountedRef = useRef(true);
   const requestSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (homeResetKey !== undefined && homeResetKey > 0) {
+      setSelectedDfe(null);
+      setSearchQuery('');
+      setShowManualForm(false);
+    }
+  }, [homeResetKey]);
 
   const refreshCached = useCallback(async () => {
     const seq = ++requestSeqRef.current;
@@ -283,22 +386,40 @@ export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: D
     };
   }, [refreshCached]);
 
-  const filteredEntries = useMemo(() => {
+  const groupedDfes = useMemo(
+    () => groupEntriesByDfe(entries, syncResults),
+    [entries, syncResults],
+  );
+
+  const visibleGroups = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return entries.filter((entry) => {
-      if (dfeFilter !== 'ALL' && entry.dfe !== dfeFilter) {
-        return false;
-      }
-      if (!q) {
-        return true;
-      }
-      return (
-        entry.ntNumber.toLowerCase().includes(q) ||
-        entry.ntVersion.toLowerCase().includes(q) ||
-        entry.dfe.toLowerCase().includes(q)
-      );
-    });
-  }, [entries, dfeFilter, searchQuery]);
+    if (!q) {
+      return groupedDfes;
+    }
+    return groupedDfes.filter(
+      (g) =>
+        g.dfe.toLowerCase().includes(q) ||
+        g.entries.some(
+          (e) => e.ntNumber.toLowerCase().includes(q) || e.ntVersion.toLowerCase().includes(q),
+        ),
+    );
+  }, [groupedDfes, searchQuery]);
+
+  const selectedDfeEntries = useMemo(() => {
+    if (!selectedDfe) {
+      return [];
+    }
+    const group = groupedDfes.find((g) => g.dfe === selectedDfe);
+    const list = group?.entries ?? [];
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      return list;
+    }
+    return list.filter(
+      (entry) =>
+        entry.ntNumber.toLowerCase().includes(q) || entry.ntVersion.toLowerCase().includes(q),
+    );
+  }, [groupedDfes, selectedDfe, searchQuery]);
 
   async function handleSyncSvrs(): Promise<void> {
     setBusy(true);
@@ -347,6 +468,7 @@ export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: D
       if (isMountedRef.current) {
         const importedLabel = `NT ${manualNtNumber} v${manualNtVersion} importada manualmente.`;
         setShowManualForm(false);
+        setSelectedDfe(imported.entry.dfe);
         setManualNtNumber('');
         setManualNtVersion('');
         setManualDate('');
@@ -393,36 +515,34 @@ export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: D
 
   return (
     <section className="card">
-      <h2>Notas Técnicas SVRS</h2>
-      <div className="toolbar">
-        <div className="field">
-          <label htmlFor="dfe-filter">Filtrar por DFe</label>
-          <select
-            id="dfe-filter"
-            value={dfeFilter}
-            onChange={(e) => {
-              if (e.target.value === 'ALL' || isDfeCode(e.target.value)) {
-                setDfeFilter(e.target.value);
-              }
+      <div className="section-header">
+        <h2>
+          {selectedDfe ? `Notas Técnicas — ${selectedDfe}` : 'Notas Técnicas por Documento Fiscal'}
+        </h2>
+        {selectedDfe && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              setSelectedDfe(null);
+              setSearchQuery('');
             }}
           >
-            <option value="ALL">Todos</option>
-            {ALL_DFES.map((dfe) => (
-              <option key={dfe} value={dfe}>
-                {dfe}
-              </option>
-            ))}
-          </select>
-        </div>
+            Voltar à Tela Inicial
+          </button>
+        )}
+      </div>
 
+      <div className="toolbar">
         <div className="field">
-          <label htmlFor="nt-search">Buscar NT</label>
+          <label htmlFor="nt-search">{selectedDfe ? 'Buscar NT' : 'Filtrar DFe ou NT'}</label>
           <input
             id="nt-search"
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Ex.: 2025.002"
+            placeholder={selectedDfe ? 'Ex.: 2025.002' : 'Ex.: NFe ou 2025.002'}
           />
         </div>
 
@@ -488,13 +608,25 @@ export function DashboardNts({ api, byokConfig, onDraftReady, onOpenRunDiff }: D
         />
       )}
 
-      <NtCatalogTable
-        entries={filteredEntries}
-        busy={busy}
-        onCheckCompliance={(entry) => {
-          void handleCheckCompliance(entry);
-        }}
-      />
+      {selectedDfe ? (
+        <NtCatalogTable
+          dfe={selectedDfe}
+          entries={selectedDfeEntries}
+          busy={busy}
+          onCheckCompliance={(entry) => {
+            void handleCheckCompliance(entry);
+          }}
+        />
+      ) : (
+        <DfeDocumentCardsGrid
+          groups={visibleGroups}
+          busy={busy}
+          onSelectDfe={(dfe) => {
+            setSelectedDfe(dfe);
+            setSearchQuery('');
+          }}
+        />
+      )}
 
       {runs.length > 0 && (
         <RecentRunsTable

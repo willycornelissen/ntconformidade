@@ -15,6 +15,7 @@ export interface DiffAndPrProps {
   readonly applyingRunId?: string | null;
   readonly applyError?: string | null;
   readonly applyOutcome?: ApplyNcOutcome | null;
+  readonly onGoHome?: () => void;
 }
 
 function PreBuildDiffCard({
@@ -84,6 +85,7 @@ export function DiffAndPr({
   applyingRunId,
   applyError,
   applyOutcome,
+  onGoHome,
 }: DiffAndPrProps) {
   const [gate, setGate] = useState<PendingApprovalGate | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -234,7 +236,14 @@ export function DiffAndPr({
 
   return (
     <section className="card">
-      <h2>Conferência de Diff e PR</h2>
+      <div className="section-header">
+        <h2>Conferência de Diff e PR</h2>
+        {onGoHome && (
+          <button type="button" className="btn" onClick={onGoHome}>
+            Voltar à Tela Inicial
+          </button>
+        )}
+      </div>
       {!runId && <p>Nenhuma execução selecionada.</p>}
       {runId && applyingRunId === runId && !gate && !activeError && (
         <p className="alert alert-warn" role="status">
@@ -259,6 +268,13 @@ export function DiffAndPr({
             <span>PR criado em {applyOutcome.prUrl}</span>
           ) : (
             <span>Patch local: {applyOutcome.patchFilePath ?? 'nenhum'}</span>
+          )}
+          {onGoHome && (
+            <div className="toolbar" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+              <button type="button" className="btn btn-primary" onClick={onGoHome}>
+                Concluir e voltar à Tela Inicial
+              </button>
+            </div>
           )}
         </div>
       )}

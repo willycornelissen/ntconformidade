@@ -20,6 +20,7 @@ export interface NcReviewProps {
     readonly xsdDir: string;
   }) => void;
   readonly onApplyStarted?: (runId: string) => void;
+  readonly onGoHome?: () => void;
 }
 
 function NcItemCard({
@@ -106,6 +107,7 @@ export function NcReview({
   applyingRunId,
   onStartApply,
   onApplyStarted,
+  onGoHome,
 }: NcReviewProps) {
   const [nc, setNc] = useState<NcDocument | null>(null);
   const [markdown, setMarkdown] = useState('');
@@ -153,7 +155,14 @@ export function NcReview({
   if (!runId || !nc) {
     return (
       <section className="card">
-        <h2>Revisão de NC</h2>
+        <div className="section-header">
+          <h2>Revisão de NC</h2>
+          {onGoHome && (
+            <button type="button" className="btn" onClick={onGoHome}>
+              Voltar à Tela Inicial
+            </button>
+          )}
+        </div>
         {errorMessage ? (
           <p className="alert alert-danger" role="alert">
             {errorMessage}
@@ -270,7 +279,14 @@ export function NcReview({
 
   return (
     <section className="card">
-      <h2>Revisão de NC — {nc.nc_id}</h2>
+      <div className="section-header">
+        <h2>Revisão de NC — {nc.nc_id}</h2>
+        {onGoHome && (
+          <button type="button" className="btn" onClick={onGoHome}>
+            Voltar à Tela Inicial
+          </button>
+        )}
+      </div>
       <p>
         DFe: <strong>{nc.nt_ref.dfe}</strong> | NT {nc.nt_ref.nt_number} v{nc.nt_ref.nt_version} |
         Commit base: <code>{nc.base_commit_sha}</code>

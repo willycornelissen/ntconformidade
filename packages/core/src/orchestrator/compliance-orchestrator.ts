@@ -78,6 +78,7 @@ export interface ComplianceOrchestratorOptions {
   readonly worktreesRootDir: string;
   readonly patchesDir: string;
   readonly maxRepairAttempts?: number;
+  readonly fetchFn?: typeof fetch;
   readonly onProgress?: (event: RunProgressEvent) => void;
 }
 
@@ -320,7 +321,9 @@ export class ComplianceOrchestrator {
       return { pdf: override.pdf, xsdDir: override.xsdDir };
     }
     this.emitProgress(run, 'SVRS_SYNC', `Baixando artefatos SVRS de ${nt.ntNumber}`);
-    const downloaded = await downloadNtArtifacts(nt, this.opts.cacheRootDir);
+    const downloaded = await downloadNtArtifacts(nt, this.opts.cacheRootDir, {
+      fetchFn: this.opts.fetchFn,
+    });
     if (!downloaded.pdfPath || !downloaded.xsdDir) {
       throw new OrchestratorStepError(
         'SVRS_SYNC',

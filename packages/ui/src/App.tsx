@@ -26,6 +26,7 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
   const [applyingRunId, setApplyingRunId] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOutcome, setApplyOutcome] = useState<ApplyNcOutcome | null>(null);
+  const [homeResetKey, setHomeResetKey] = useState(0);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -86,17 +87,28 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
       });
   }
 
+  function handleGoHome(): void {
+    setActiveTab('dashboard');
+    setHomeResetKey((prev) => prev + 1);
+  }
+
   return (
-    <Layout activeTab={activeTab} onSelectTab={setActiveTab} latestProgress={latestProgress}>
+    <Layout
+      activeTab={activeTab}
+      onSelectTab={setActiveTab}
+      onGoHome={handleGoHome}
+      latestProgress={latestProgress}
+    >
       {activeTab === 'dashboard' && (
         <DashboardNts
           api={api}
           byokConfig={byokConfig}
+          homeResetKey={homeResetKey}
           onDraftReady={handleDraftReady}
           onOpenRunDiff={handleOpenRunDiff}
         />
       )}
-      {activeTab === 'repos' && <RepoRegistry api={api} />}
+      {activeTab === 'repos' && <RepoRegistry api={api} onGoHome={handleGoHome} />}
       {activeTab === 'nc' && (
         <NcReview
           key={selectedRunId ?? 'none'}
@@ -106,6 +118,7 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
           byokConfig={byokConfig}
           applyingRunId={applyingRunId}
           onStartApply={handleStartApply}
+          onGoHome={handleGoHome}
         />
       )}
       {activeTab === 'diff' && (
@@ -116,10 +129,16 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
           applyingRunId={applyingRunId}
           applyError={applyError}
           applyOutcome={applyOutcome}
+          onGoHome={handleGoHome}
         />
       )}
       {activeTab === 'settings' && (
-        <SettingsByokDoctor api={api} byokConfig={byokConfig} onChangeConfig={setByokConfig} />
+        <SettingsByokDoctor
+          api={api}
+          byokConfig={byokConfig}
+          onChangeConfig={setByokConfig}
+          onGoHome={handleGoHome}
+        />
       )}
     </Layout>
   );

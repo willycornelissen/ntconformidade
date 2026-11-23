@@ -77,6 +77,23 @@ export function buildHardenedWebPreferences(preloadPath: string): {
   };
 }
 
+/** Returns locked-down BrowserWindow constructor options with the native menu bar disabled. */
+export function buildMainWindowOptions(preloadPath: string): {
+  readonly width: 1280;
+  readonly height: 840;
+  readonly title: string;
+  readonly autoHideMenuBar: true;
+  readonly webPreferences: ReturnType<typeof buildHardenedWebPreferences>;
+} {
+  return {
+    width: 1280,
+    height: 840,
+    title: 'NT Conformidade — SEF/MG',
+    autoHideMenuBar: true,
+    webPreferences: buildHardenedWebPreferences(preloadPath),
+  };
+}
+
 /** Validates whether a top-level renderer navigation URL matches the bundled UI HTML file or loopback dev origin. */
 export function isAllowedNavigationUrl(
   targetUrl: string,
@@ -185,8 +202,9 @@ function attachWindowSecurityGuards(
 
 /** Boots Electron BrowserWindow, SQLite WAL database, SafeStorage vault, CSP, and IPC channels. */
 export async function bootstrapDesktopApp(): Promise<void> {
-  const { app, BrowserWindow, ipcMain, safeStorage, session } = await import('electron');
+  const { app, BrowserWindow, ipcMain, Menu, net, safeStorage, session } = await import('electron');
   await app.whenReady();
+  Menu.setApplicationMenu(null);
 
   const isPackaged = app.isPackaged;
   const dataDir = resolveNtcDataDir(process.env, app.getPath('userData'), isPackaged);
@@ -237,12 +255,22 @@ export async function bootstrapDesktopApp(): Promise<void> {
     ];
 
     let mainWindow: InstanceType<typeof BrowserWindow> | null = null;
+    const desktopFetchFn: typeof fetch = (input, init) => {
+      const targetUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      return net.fetch(targetUrl, init as Parameters<typeof net.fetch>[1]);
+    };
     controller = createDesktopIpcController({
       db,
       secretStore,
       dataDir,
       oracleJarPath,
       allowedSenderOrigins: allowedOrigins,
+      fetchFn: desktopFetchFn,
       emitProgress: (event) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send(IPC_CHANNELS.RUN_PROGRESS, event);
@@ -252,12 +280,8 @@ export async function bootstrapDesktopApp(): Promise<void> {
     controller.register(ipcMain);
 
     const preloadPath = path.resolve(import.meta.dirname, 'preload/preload.cjs');
-    mainWindow = new BrowserWindow({
-      width: 1280,
-      height: 840,
-      title: 'NT Conformidade — SEF/MG',
-      webPreferences: buildHardenedWebPreferences(preloadPath),
-    });
+    mainWindow = new BrowserWindow(buildMainWindowOptions(preloadPath));
+    mainWindow.removeMenu();
     attachWindowSecurityGuards(mainWindow, uiHtmlPath, devServerUrl);
     mainWindow.on('closed', () => {
       mainWindow = null;

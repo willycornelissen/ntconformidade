@@ -102,6 +102,15 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
     const reloadedNfe = ntcDb.listDfeRepos().find((r) => r.dfe === 'NFe');
     expect(reloadedNfe?.baseBranch).toBe('release/2.x');
     expect(reloadedNfe?.baselineNt).toBe('2026.001@v1.00');
+
+    // Simula banco preexistente com rota legada quebrada '/Gtve/Documentos' e valida reparo automático
+    const gtveEntry = repos.find((r) => r.dfe === 'GTVe');
+    if (!gtveEntry) {
+      throw new Error('GTVe ausente');
+    }
+    ntcDb.saveDfeRepo({ ...gtveEntry, svrsRelativePath: '/Gtve/Documentos' });
+    ntcDb.seedDefaultRepos(defaults);
+    expect(ntcDb.getDfeRepo('GTVe')?.svrsRelativePath).toBe('/Cte/Documentos');
   });
 
   it('SQ-05 e SQ-06 aplicam integridade FK e restrição CHECK de status no SQLite', async () => {

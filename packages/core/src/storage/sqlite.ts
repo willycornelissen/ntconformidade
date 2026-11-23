@@ -256,11 +256,27 @@ function createDatabaseApi(rawDb: Database.Database): NtcDatabase {
       svrs_relative_path = excluded.svrs_relative_path, baseline_nt = excluded.baseline_nt
   `);
 
+  const repairGtvePathStmt = rawDb.prepare(
+    "UPDATE dfe_repos SET svrs_relative_path = ? WHERE dfe = 'GTVe' AND svrs_relative_path = '/Gtve/Documentos'",
+  );
+  const repairNfeEventSchemaStmt = rawDb.prepare(
+    `UPDATE nt_catalog
+     SET xsd_url = 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=2&nomeArquivo=PL_010b_NT2025_002_v1.30.zip'
+     WHERE dfe = 'NFe' AND nt_number = '2025.002' AND xsd_url LIKE '%Schema_Evento_211110_NT2025.002%'`,
+  );
+
   return {
     rawDb,
     close: () => rawDb.close(),
     [Symbol.dispose]: () => rawDb.close(),
-    seedDefaultRepos: (entries) => runRepoBatch(rawDb, seedStmt, entries),
+    seedDefaultRepos: (entries) => {
+      runRepoBatch(rawDb, seedStmt, entries);
+      const gtveDefault = entries.find((e) => e.dfe === 'GTVe');
+      if (gtveDefault && gtveDefault.svrsRelativePath !== '/Gtve/Documentos') {
+        repairGtvePathStmt.run(gtveDefault.svrsRelativePath);
+      }
+      repairNfeEventSchemaStmt.run();
+    },
     saveDfeRepo: (entry) => {
       saveStmt.run(DfeRepoEntrySchema.parse(entry));
     },

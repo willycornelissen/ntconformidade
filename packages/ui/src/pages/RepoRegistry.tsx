@@ -118,7 +118,13 @@ function RepoCard({
   );
 }
 
-export function RepoRegistry({ api }: { readonly api: NtcDesktopApi }) {
+export function RepoRegistry({
+  api,
+  onGoHome,
+}: {
+  readonly api: NtcDesktopApi;
+  readonly onGoHome?: () => void;
+}) {
   const [repos, setRepos] = useState<DfeRepoEntry[]>([]);
   const [savingDfe, setSavingDfe] = useState<DfeCode | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -186,7 +192,14 @@ export function RepoRegistry({ api }: { readonly api: NtcDesktopApi }) {
 
   return (
     <section className="card">
-      <h2>Registro de Repositórios DFe</h2>
+      <div className="section-header">
+        <h2>Registro de Repositórios DFe</h2>
+        {onGoHome && (
+          <button type="button" className="btn" onClick={onGoHome}>
+            Voltar à Tela Inicial
+          </button>
+        )}
+      </div>
       {statusMessage && (
         <p className="alert alert-ok" role="status">
           {statusMessage}

@@ -96,6 +96,7 @@ export interface DesktopIpcControllerDeps {
   readonly allowedSenderOrigins: readonly string[];
   readonly allowedXsdRoots?: readonly string[];
   readonly allowedRepoRoots?: readonly string[];
+  readonly fetchFn?: typeof fetch;
   readonly emitProgress: (event: RunProgressEvent) => void;
   readonly orchestrator?: OrchestratorLike;
 }
@@ -237,11 +238,14 @@ function assertBoundByokSecretKeyRef(config: {
 
 function buildDefaultOrchestrator(deps: DesktopIpcControllerDeps): OrchestratorLike {
   const oracle = new XsdOracleBridge({ jarPath: deps.oracleJarPath });
-  const llmGateway = new ByokLlmGateway({ secretStore: deps.secretStore });
+  const llmGateway = new ByokLlmGateway({
+    secretStore: deps.secretStore,
+    fetchFn: deps.fetchFn,
+  });
   const gitForge = new GiteaForgeBridge({
     worktrees: new WorktreeManager({ secretStore: deps.secretStore }),
     maven: new HostMavenRunner(),
-    gitea: new GiteaAdapter({ secretStore: deps.secretStore }),
+    gitea: new GiteaAdapter({ secretStore: deps.secretStore, fetchFn: deps.fetchFn }),
     useRelease8Flag: () => detectJavaNeedsRelease8Flag(),
   });
 
@@ -255,6 +259,7 @@ function buildDefaultOrchestrator(deps: DesktopIpcControllerDeps): OrchestratorL
     mirrorsRootDir: path.join(deps.dataDir, 'repos'),
     worktreesRootDir: path.join(deps.dataDir, 'worktrees'),
     patchesDir: path.join(deps.dataDir, 'artifacts'),
+    fetchFn: deps.fetchFn,
     onProgress: (ev) => deps.emitProgress(RunProgressIpcSchema.parse(ev)),
   });
 }
@@ -383,7 +388,7 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
       const targetRepos = req?.dfes
         ? repos.filter((repo) => req.dfes?.includes(repo.dfe))
         : repos;
-      const results = await syncAllSvrsNts(targetRepos);
+      const results = await syncAllSvrsNts(targetRepos, { fetchFn: deps.fetchFn });
       const allEntries = results.flatMap((result) => result.entries);
       if (allEntries.length > 0) {
         deps.db.upsertNtCatalogEntries(allEntries);
@@ -434,6 +439,7 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
         giteaUrl: req?.giteaUrl,
         sampleRepoDir: safeSampleRepoDir,
         byokConfig: req?.byokConfig,
+        fetchFn: deps.fetchFn,
       });
       return DoctorReportIpcSchema.parse(report);
     },

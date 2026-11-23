@@ -101,7 +101,7 @@
     "parserPackage": "br.gov.mg.fazenda.gtveparser.parser",
     "utilPackage": "br.gov.mg.fazenda.gtveparser.util",
     "tagPrefix": "GTVEPROC",
-    "svrsRelativePath": "/Gtve/Documentos",
+    "svrsRelativePath": "/Cte/Documentos",
     "baselineNt": null
   },
   {

@@ -7,6 +7,20 @@ import { makeMockApi } from './mock-api.js';
 
 const SAMPLE_NTS: readonly NtCatalogEntry[] = [
   {
+    id: 'NFe:2024.001:1.00',
+    dfe: 'NFe',
+    ntNumber: '2024.001',
+    ntVersion: '1.00',
+    publishedDate: '2024-08-01',
+    homologDate: null,
+    prodDate: null,
+    pdfUrl: 'https://dfe-portal.svrs.rs.gov.br/Nfe/NT2024.pdf',
+    xsdUrl: null,
+    pdfSha256: null,
+    sourceStatus: 'DISCOVERED',
+    fetchedAt: '2026-11-19T12:00:00.000Z',
+  },
+  {
     id: 'NFe:2025.002:1.30',
     dfe: 'NFe',
     ntNumber: '2025.002',
@@ -37,7 +51,7 @@ const SAMPLE_NTS: readonly NtCatalogEntry[] = [
 ];
 
 describe('DashboardNts (CUJ 1)', () => {
-  it('UI-DN-01: loads cached NTs immediately and filters by DFe and text query', async () => {
+  it('UI-DN-01: displays NTs grouped by DFe on home screen, drills into NT list on click, and supports filtering and back navigation', async () => {
     const user = userEvent.setup();
     const api = makeMockApi({
       listNts: vi.fn(async () => [...SAMPLE_NTS]),
@@ -51,17 +65,42 @@ describe('DashboardNts (CUJ 1)', () => {
       />,
     );
 
-    expect(await screen.findByText('2025.002')).toBeInTheDocument();
-    expect(screen.getByText('2025.001')).toBeInTheDocument();
+    const nfeCard = await screen.findByRole('button', { name: /^NFe\b/i });
+    const nfceCard = screen.getByRole('button', { name: /^NFCe\b/i });
+    expect(nfeCard).toHaveTextContent('2 NTs');
+    expect(nfeCard).toHaveTextContent(/2025\.002/);
+    expect(nfeCard).toHaveTextContent(/15\/10\/2025/);
+    expect(nfceCard).toHaveTextContent('1 NT');
+    expect(screen.queryByRole('button', { name: /Verificar conformidade/i })).not.toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText(/Filtrar por DFe/i), 'NFCe');
-    expect(screen.queryByText('2025.002')).not.toBeInTheDocument();
-    expect(screen.getByText('2025.001')).toBeInTheDocument();
+    // Filter card list by query before drilling in
+    await user.type(screen.getByLabelText(/Filtrar DFe ou NT/i), 'NFCe');
+    expect(screen.queryByRole('button', { name: /^NFe\b/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^NFCe\b/i })).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText(/Filtrar por DFe/i), 'ALL');
+    await user.clear(screen.getByLabelText(/Filtrar DFe ou NT/i));
+    await user.click(screen.getByRole('button', { name: /^NFe\b/i }));
+
+    expect(await screen.findByRole('heading', { name: /Notas Técnicas — NFe/i })).toBeInTheDocument();
+    expect(screen.getByText('2025.002')).toBeInTheDocument();
+    expect(screen.getByText('2024.001')).toBeInTheDocument();
+    expect(screen.getByText('15/10/2025')).toBeInTheDocument();
+    expect(screen.getByText('01/08/2024')).toBeInTheDocument();
+    expect(screen.queryByText('2025-10-15')).not.toBeInTheDocument();
+    expect(screen.queryByText('2025.001')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /Verificar conformidade/i })).toHaveLength(2);
+
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('2025.002');
+    expect(rows[1]).toHaveTextContent('2024.001');
+
     await user.type(screen.getByLabelText(/Buscar NT/i), '2025.002');
     expect(screen.getByText('2025.002')).toBeInTheDocument();
-    expect(screen.queryByText('2025.001')).not.toBeInTheDocument();
+    expect(screen.queryByText('2024.001')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Voltar à Tela Inicial' }));
+    expect(await screen.findByRole('heading', { name: /Notas Técnicas por Documento Fiscal/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^NFCe\b/i })).toBeInTheDocument();
   });
 
   it('UI-DN-02: isolates per-DFe SVRS sync errors and imports manual PDF+XSD pair cleanly', async () => {
@@ -122,7 +161,7 @@ describe('DashboardNts (CUJ 1)', () => {
     );
   });
 
-  it('UI-DN-03: triggers checkCompliance for selected NT and forwards draft to parent', async () => {
+  it('UI-DN-03: triggers checkCompliance after selecting a DFe card and forwards draft to parent', async () => {
     const user = userEvent.setup();
     const onDraftReady = vi.fn();
     const checkCompliance = vi.fn(async () => ({
@@ -169,6 +208,7 @@ describe('DashboardNts (CUJ 1)', () => {
       />,
     );
 
+    await user.click(await screen.findByRole('button', { name: /^NFe\b/i }));
     await user.click(await screen.findByRole('button', { name: /Verificar conformidade/i }));
     expect(checkCompliance).toHaveBeenCalledTimes(1);
     expect(onDraftReady).toHaveBeenCalledWith('run-new-1', '/tmp/cache/xsd');

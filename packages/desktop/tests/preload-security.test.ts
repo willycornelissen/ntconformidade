@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { IPC_CHANNELS } from '@ntc/core';
 import {
   buildHardenedWebPreferences,
+  buildMainWindowOptions,
   isAllowedNavigationUrl,
   resolveDevServerUrl,
   resolveNtcDataDir,
@@ -111,6 +112,10 @@ describe('Preload Bridge & Electron BrowserWindow Security', () => {
     expect(prefs.webSecurity).toBe(true);
     expect(prefs.webviewTag).toBe(false);
     expect(prefs.navigateOnDragDrop).toBe(false);
+
+    const windowOpts = buildMainWindowOptions('/opt/app/preload/preload.cjs');
+    expect(windowOpts.autoHideMenuBar).toBe(true);
+    expect(windowOpts.webPreferences).toEqual(prefs);
 
     expect(STRICT_CSP_HEADER).toContain("default-src 'self'");
     expect(STRICT_CSP_HEADER).toContain("object-src 'none'");

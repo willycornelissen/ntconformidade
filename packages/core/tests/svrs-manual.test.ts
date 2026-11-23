@@ -51,6 +51,7 @@ interface SyntheticZipEntry {
   readonly content: string | Buffer;
   readonly posixMode?: number;
   readonly method?: 0 | 8;
+  readonly flags?: number;
   readonly spoofUncompressedSize?: number;
 }
 
@@ -63,6 +64,8 @@ function buildSyntheticZip(entries: readonly SyntheticZipEntry[]): Buffer {
     const nameBuf = Buffer.from(entry.name, 'utf8');
     const rawData = Buffer.isBuffer(entry.content) ? entry.content : Buffer.from(entry.content, 'utf8');
     const method = entry.method ?? 8;
+    const flags = entry.flags ?? 0;
+    const hasDataDescriptor = (flags & 0x08) !== 0;
     const payload = method === 0 ? rawData : zlib.deflateRawSync(rawData);
     const sum = crc32(rawData);
     const declaredUncompressed = entry.spoofUncompressedSize ?? rawData.length;
@@ -70,20 +73,31 @@ function buildSyntheticZip(entries: readonly SyntheticZipEntry[]): Buffer {
     const local = Buffer.alloc(30 + nameBuf.length);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(flags, 6);
     local.writeUInt16LE(method, 8);
-    local.writeUInt32LE(sum, 14);
-    local.writeUInt32LE(payload.length, 18);
-    local.writeUInt32LE(declaredUncompressed, 22);
+    local.writeUInt32LE(hasDataDescriptor ? 0 : sum, 14);
+    local.writeUInt32LE(hasDataDescriptor ? 0 : payload.length, 18);
+    local.writeUInt32LE(hasDataDescriptor ? 0 : declaredUncompressed, 22);
     local.writeUInt16LE(nameBuf.length, 26);
     nameBuf.copy(local, 30);
 
     locals.push(local, payload);
+    let descriptorLen = 0;
+    if (hasDataDescriptor) {
+      const dd = Buffer.alloc(16);
+      dd.writeUInt32LE(0x08074b50, 0);
+      dd.writeUInt32LE(sum, 4);
+      dd.writeUInt32LE(payload.length, 8);
+      dd.writeUInt32LE(declaredUncompressed, 12);
+      locals.push(dd);
+      descriptorLen = dd.length;
+    }
 
     const cd = Buffer.alloc(46 + nameBuf.length);
     cd.writeUInt32LE(0x02014b50, 0);
     cd.writeUInt16LE((3 << 8) | 20, 4);
     cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(flags, 8);
     cd.writeUInt16LE(method, 10);
     cd.writeUInt32LE(sum, 16);
     cd.writeUInt32LE(payload.length, 20);
@@ -95,7 +109,7 @@ function buildSyntheticZip(entries: readonly SyntheticZipEntry[]): Buffer {
     nameBuf.copy(cd, 46);
     centrals.push(cd);
 
-    offset += local.length + payload.length;
+    offset += local.length + payload.length + descriptorLen;
   }
 
   const cdBuf = Buffer.concat(centrals);
@@ -199,6 +213,8 @@ describe('Ciclo 3 — Scraper SVRS e Importação Manual Segura', () => {
     expect(results.find((r) => r.dfe === 'NFCe')?.entries).toHaveLength(1);
     expect(results.find((r) => r.dfe === 'BPe')?.error).toContain('503');
     expect(results.find((r) => r.dfe === 'CTe')?.error).toBeTruthy();
+    expect(results.find((r) => r.dfe === 'GTVe')?.error).toBeTruthy();
+    expect(repos.find((r) => r.dfe === 'GTVe')?.svrsRelativePath).toBe('/Cte/Documentos');
   });
 
   it('SV-05 a SV-08 bloqueiam SSRF em URLs, redirects maliciosos e gravam PDF com SHA-256 exato', async () => {
@@ -626,5 +642,159 @@ describe('Ciclo 3 — Scraper SVRS e Importação Manual Segura', () => {
         ),
     });
     expect(oversizedHtmlRes.error).toMatch(/excede o limite/i);
+  });
+
+  it('SV-17 analisa layout real de artigos/seções do portal SVRS com download_arquivo_estatico e matching de Schemas', () => {
+    const liveStyleHtml = `
+      <html><body>
+        <table><tbody><tr><td>1°</td><td>SP</td></tr></tbody></table>
+        <article class="artigo">
+          <header class="artigo__cabecalho"><h1 class="artigo__titulo">Schemas</h1></header>
+          <div class="artigo__texto">
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="07/10/2025">07/10/2025</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 2, 'PL_010b_NT2025_002_v1.30.zip');">Pacote de schemas - NT 2025.002 v1.30</a>
+                </h2>
+              </header>
+            </article>
+          </div>
+        </article>
+        <article class="artigo">
+          <header class="artigo__cabecalho"><h1 class="artigo__titulo">Notas Técnicas</h1></header>
+          <div class="artigo__texto">
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="30/10/2026">30/10/2026</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 3, 'NT_2025.002_v1.30.pdf');">Nota Técnica 2025.002 v1.30 - RTC</a>
+                </h2>
+              </header>
+            </article>
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="20/05/2026">20/05/2026</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 3, 'NT_2026.001_v1.02b.pdf');">Nota Técnica 2026.001 v.1.02b - PAA</a>
+                </h2>
+              </header>
+            </article>
+          </div>
+        </article>
+      </body></html>
+    `;
+
+    const entries = parseSvrsHtmlTable(liveStyleHtml, 'NFe', 'https://dfe-portal.svrs.rs.gov.br/Nfe/Documentos');
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      dfe: 'NFe',
+      ntNumber: '2025.002',
+      ntVersion: 'v1.30',
+      publishedDate: '2026-10-30',
+      pdfUrl: 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=3&nomeArquivo=NT_2025.002_v1.30.pdf',
+      xsdUrl: 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=2&nomeArquivo=PL_010b_NT2025_002_v1.30.zip',
+    });
+    expect(entries[1]).toMatchObject({
+      ntNumber: '2026.001',
+      ntVersion: 'v1.02b',
+      publishedDate: '2026-05-20',
+      xsdUrl: null,
+    });
+  });
+
+  it('SV-18 extrai pacotes ZIP reais com flag de data descriptor (0x08) mantendo bloqueio de entradas criptografadas (0x01)', async () => {
+    const { dir } = await makeTempEnv();
+
+    const ddZip = path.join(dir, 'svrs-streaming.zip');
+    await fs.writeFile(
+      ddZip,
+      buildSyntheticZip([
+        {
+          name: 'PL_CTe/gtve_v4.00.xsd',
+          content:
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:include schemaLocation="tiposGeralCTe_v4.00.xsd"/></xs:schema>',
+          flags: 0x08,
+        },
+      ]),
+    );
+    const destDd = path.join(dir, 'dest-dd');
+    await extractSafeXsdBundle(ddZip, destDd);
+    expect(await fs.readFile(path.join(destDd, 'PL_CTe', 'gtve_v4.00.xsd'), 'utf8')).toContain('xs:include');
+
+    const xincludeXsd = path.join(dir, 'xinclude.xsd');
+    await fs.writeFile(
+      xincludeXsd,
+      '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd"/></xs:schema>',
+      'utf8',
+    );
+    await expect(extractSafeXsdBundle(xincludeXsd, path.join(dir, 'dest-xinc'))).rejects.toThrow(/XInclude/i);
+
+    const encryptedZip = path.join(dir, 'encrypted.zip');
+    await fs.writeFile(
+      encryptedZip,
+      buildSyntheticZip([
+        {
+          name: 'secret.xsd',
+          content: '<xs:schema/>',
+          flags: 0x01,
+        },
+      ]),
+    );
+    await expect(extractSafeXsdBundle(encryptedZip, path.join(dir, 'dest-enc'))).rejects.toThrow(/criptografadas/i);
+  });
+
+  it('SV-19 prioriza Pacote de Liberação (PL_*) completo sobre Schema_Evento_* isolado ao parear NTs SVRS', () => {
+    const htmlWithEventFirst = `
+      <html><body>
+        <article class="artigo">
+          <header class="artigo__cabecalho"><h1 class="artigo__titulo">Schemas</h1></header>
+          <div class="artigo__texto">
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="23/07/2026">23/07/2026</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 2, 'Schema_Evento_211110_NT2025.002 v1.40.zip');">Evento 211110 - NT 2025.002 v1.40</a>
+                </h2>
+              </header>
+            </article>
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="07/10/2025">07/10/2025</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 2, 'PL_010b_NT2025_002_v1.30.zip');">Pacote de schemas - NT 2025.002 v1.30</a>
+                </h2>
+              </header>
+            </article>
+          </div>
+        </article>
+        <article class="artigo">
+          <header class="artigo__cabecalho"><h1 class="artigo__titulo">Notas Técnicas</h1></header>
+          <div class="artigo__texto">
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="10/11/2026">10/11/2026</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 3, 'NT_2025.002_v1.53_RTC_NF-e_IBS_CBS_IS.pdf');">Nota Técnica 2025.002 v1.53 - RTC</a>
+                </h2>
+              </header>
+            </article>
+            <article class="conteudo-lista__item">
+              <header>
+                <time class="conteudo-lista__item__datahora" datetime="01/10/2026">01/10/2026</time>
+                <h2 class="conteudo-lista__item__titulo">
+                  <a href="#" onclick="download_arquivo_estatico('NFE', 3, 'NT_2025.002_v1.40_RTC.pdf');">Nota Técnica 2025.002 v1.40 - RTC</a>
+                </h2>
+              </header>
+            </article>
+          </div>
+        </article>
+      </body></html>
+    `;
+
+    const entries = parseSvrsHtmlTable(htmlWithEventFirst, 'NFe', 'https://dfe-portal.svrs.rs.gov.br/Nfe/Documentos');
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.xsdUrl).toContain('PL_010b_NT2025_002_v1.30.zip');
+    expect(entries[1]?.xsdUrl).toContain('PL_010b_NT2025_002_v1.30.zip');
   });
 });

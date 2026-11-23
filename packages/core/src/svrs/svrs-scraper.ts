@@ -81,13 +81,13 @@ function parseOptionalCellDate(raw: string): string | null {
 
 export function parseNtIdentifier(rawTitle: string): { ntNumber: string; ntVersion: string } {
   const text = rawTitle.trim();
-  const verMatch = /\b(?:v|vers[aã]o)\s*(\d+(?:\.\d+)?)\b/i.exec(text);
+  const verMatch = /\b(?:v|vers[aã]o)[.\s]*(\d+(?:\.\d+)?[a-z]?)\b/i.exec(text);
   const errataMatch = /errata\s*(\d+)?/i.exec(text);
   const baseVer = verMatch?.[1] ? `v${verMatch[1]}` : 'v1.00';
   const ntVersion = errataMatch ? `${baseVer}-errata${errataMatch[1] ?? '1'}` : baseVer;
 
-  const strippedForNum = text.replace(/\b(?:v|vers[aã]o)\s*\d+(?:\.\d+)?\b/gi, ' ');
-  const numMatch = /(\d{4}\.\d{3}|\d+\.\d+)/.exec(strippedForNum);
+  const strippedForNum = text.replace(/\b(?:v|vers[aã]o)[.\s]*\d+(?:\.\d+)?[a-z]?\b/gi, ' ');
+  const numMatch = /(\d{4}\.\d{2,3}|\d+\.\d+)/.exec(strippedForNum);
   const fallback = strippedForNum
     .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/\.\.+/g, '_')
@@ -97,16 +97,51 @@ export function parseNtIdentifier(rawTitle: string): { ntNumber: string; ntVersi
   return { ntNumber, ntVersion };
 }
 
-export function parseSvrsHtmlTable(html: string, dfe: DfeCode, pageUrl: string): NtCatalogEntry[] {
-  const $ = cheerio.load(html);
-  $('script, style, noscript').remove();
+const SVRS_STATIC_DOWNLOAD_RE =
+  /download_arquivo_estatico\(\s*['"]([^'"]+)['"]\s*,\s*(\d+)\s*,\s*['"]([^'"]+)['"]\s*\)/i;
 
+function resolveSvrsStaticDownloadUrl(
+  linkEl: ReturnType<cheerio.CheerioAPI>,
+  pageUrl: string,
+): { url: string | null; fileName: string } {
+  const onclick = linkEl.attr('onclick') ?? '';
+  const staticMatch = SVRS_STATIC_DOWNLOAD_RE.exec(onclick);
+  if (staticMatch?.[1] && staticMatch[2] && staticMatch[3]) {
+    const [, sistema, tipo, nome] = staticMatch;
+    const rel = `/${encodeURIComponent(sistema)}/DownloadArquivoEstatico/?sistema=${encodeURIComponent(sistema)}&tipoArquivo=${encodeURIComponent(tipo)}&nomeArquivo=${encodeURIComponent(nome)}`;
+    try {
+      return {
+        url: assertSafeSvrsUrl(new URL(rel, pageUrl).toString()).toString(),
+        fileName: nome,
+      };
+    } catch {
+      return { url: null, fileName: nome };
+    }
+  }
+  const href = (linkEl.attr('href') ?? '').trim();
+  if (!href || href.startsWith('#') || /^javascript:/i.test(href)) {
+    return { url: null, fileName: '' };
+  }
+  try {
+    return {
+      url: assertSafeSvrsUrl(new URL(href, pageUrl).toString()).toString(),
+      fileName: href,
+    };
+  } catch {
+    return { url: null, fileName: href };
+  }
+}
+
+function parseClassicTableEntries(
+  $: cheerio.CheerioAPI,
+  dfe: DfeCode,
+  pageUrl: string,
+  fetchedAt: string,
+): { hasTables: boolean; entries: NtCatalogEntry[] } {
   const rows = $('table tbody tr');
   if (rows.length === 0) {
-    throw new Error(`Tabela SVRS esperada não encontrada para ${dfe}`);
+    return { hasTables: false, entries: [] };
   }
-
-  const fetchedAt = new Date().toISOString();
   const entries: NtCatalogEntry[] = [];
   const seenKeys = new Set<string>();
   rows.each((_, rowEl) => {
@@ -115,7 +150,12 @@ export function parseSvrsHtmlTable(html: string, dfe: DfeCode, pageUrl: string):
       return;
     }
     const title = $(cells[0]).text().replace(/\s+/g, ' ').trim();
-    const publishedDate = parseBrazilianDate($(cells[1]).text());
+    let publishedDate: string | null = null;
+    try {
+      publishedDate = parseBrazilianDate($(cells[1]).text());
+    } catch {
+      publishedDate = null;
+    }
     if (!title || !publishedDate) {
       return;
     }
@@ -145,11 +185,150 @@ export function parseSvrsHtmlTable(html: string, dfe: DfeCode, pageUrl: string):
       }),
     );
   });
+  return { hasTables: true, entries };
+}
 
-  if (entries.length === 0) {
-    throw new Error(`Nenhum registro válido de NT extraído para ${dfe}`);
+function classifySchemaPriority(title: string, fileName: string): number {
+  const isEventOrBulletin =
+    /^(?:Schema_Evento|Eventos?_|BT[\s_])/i.test(fileName) ||
+    /^(?:Evento|BT)\b/i.test(title) ||
+    /eventos?\s+d[aeo]/i.test(title);
+  if (/^PL_/i.test(fileName) && !isEventOrBulletin) {
+    return 3;
   }
-  return entries;
+  return isEventOrBulletin ? 1 : 2;
+}
+
+function extractAllNtNumbers(title: string, fileName: string): string[] {
+  const combined = `${title} ${fileName.replace(/[_-]+/g, ' ')}`;
+  const found = new Set<string>();
+  for (const m of combined.matchAll(/\b(20\d{2})[.\s]+(\d{3})\b/g)) {
+    if (m[1] && m[2]) {
+      found.add(`${m[1]}.${m[2]}`);
+    }
+  }
+  return [...found];
+}
+
+function setSchemaIfHigherPriority(
+  target: Map<string, { url: string; priority: number }>,
+  key: string,
+  url: string,
+  priority: number,
+): void {
+  const existing = target.get(key);
+  if (!existing || priority > existing.priority) {
+    target.set(key, { url, priority });
+  }
+}
+
+function parsePortalArticleEntries(
+  $: cheerio.CheerioAPI,
+  dfe: DfeCode,
+  pageUrl: string,
+  fetchedAt: string,
+): { hasSections: boolean; entries: NtCatalogEntry[] } {
+  const headings = $('h1.artigo__titulo');
+  if (headings.length === 0) {
+    return { hasSections: false, entries: [] };
+  }
+
+  const schemaByExactKey = new Map<string, { url: string; priority: number }>();
+  const schemaByNumber = new Map<string, { url: string; priority: number }>();
+  const rawNts: Array<{ title: string; publishedDate: string; pdfUrl: string | null }> = [];
+
+  headings.each((_, h1) => {
+    const sectionTitle = $(h1).text().replace(/\s+/g, ' ').trim();
+    const isSchemas = /^schemas$/i.test(sectionTitle);
+    const isNotasTecnicas = /^notas\s+t[eé]cnicas$/i.test(sectionTitle);
+    if (!isSchemas && !isNotasTecnicas) {
+      return;
+    }
+    const articles = $(h1).closest('.artigo__cabecalho').next().find('article.conteudo-lista__item');
+    articles.each((__, art) => {
+      const linkEl = $(art).find('a').first();
+      const title = linkEl.text().replace(/\s+/g, ' ').trim();
+      const dateRaw =
+        $(art).find('time.conteudo-lista__item__datahora').first().text().trim() ||
+        ($(art).find('time').first().attr('datetime') ?? '').trim();
+      if (!title || !dateRaw) {
+        return;
+      }
+      const publishedDate = parseOptionalCellDate(dateRaw);
+      if (!publishedDate) {
+        return;
+      }
+      const { url, fileName } = resolveSvrsStaticDownloadUrl(linkEl, pageUrl);
+      if (isSchemas && url && (fileName.toLowerCase().includes('.zip') || /schema|pacote/i.test(title))) {
+        const priority = classifySchemaPriority(title, fileName);
+        const { ntNumber, ntVersion } = parseNtIdentifier(title);
+        setSchemaIfHigherPriority(schemaByExactKey, `${ntNumber}:${ntVersion}`, url, priority);
+        setSchemaIfHigherPriority(schemaByNumber, ntNumber, url, priority);
+        for (const extraNum of extractAllNtNumbers(title, fileName)) {
+          setSchemaIfHigherPriority(schemaByNumber, extraNum, url, priority);
+        }
+        return;
+      }
+      if (isNotasTecnicas) {
+        rawNts.push({ title, publishedDate, pdfUrl: url });
+      }
+    });
+  });
+
+  const entries: NtCatalogEntry[] = [];
+  const seenKeys = new Set<string>();
+  for (const item of rawNts) {
+    const { ntNumber, ntVersion } = parseNtIdentifier(item.title);
+    const uniqueKey = `${dfe}:${ntNumber}:${ntVersion}`;
+    if (seenKeys.has(uniqueKey)) {
+      continue;
+    }
+    seenKeys.add(uniqueKey);
+    const exactMatch = schemaByExactKey.get(`${ntNumber}:${ntVersion}`);
+    const numberMatch = schemaByNumber.get(ntNumber);
+    const xsdUrl =
+      exactMatch && (!numberMatch || exactMatch.priority >= numberMatch.priority)
+        ? exactMatch.url
+        : (numberMatch?.url ?? exactMatch?.url ?? null);
+    entries.push(
+      NtCatalogEntrySchema.parse({
+        id: uniqueKey,
+        dfe,
+        ntNumber,
+        ntVersion,
+        publishedDate: item.publishedDate,
+        homologDate: null,
+        prodDate: null,
+        pdfUrl: item.pdfUrl,
+        xsdUrl,
+        pdfSha256: null,
+        sourceStatus: 'DISCOVERED',
+        fetchedAt,
+      }),
+    );
+  }
+  return { hasSections: true, entries };
+}
+
+export function parseSvrsHtmlTable(html: string, dfe: DfeCode, pageUrl: string): NtCatalogEntry[] {
+  const $ = cheerio.load(html);
+  $('script, style, noscript').remove();
+  const fetchedAt = new Date().toISOString();
+
+  const tableResult = parseClassicTableEntries($, dfe, pageUrl, fetchedAt);
+  if (tableResult.entries.length > 0) {
+    return tableResult.entries;
+  }
+
+  const portalResult = parsePortalArticleEntries($, dfe, pageUrl, fetchedAt);
+  if (portalResult.entries.length > 0) {
+    return portalResult.entries;
+  }
+
+  if (!tableResult.hasTables && !portalResult.hasSections) {
+    throw new Error(`Tabela SVRS esperada não encontrada para ${dfe}`);
+  }
+  throw new Error(`Nenhum registro válido de NT extraído para ${dfe}`);
 }
 
 function extractLinks(

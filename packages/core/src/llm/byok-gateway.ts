@@ -57,6 +57,7 @@ export class ByokMissingSecretError extends Error {
 export interface ByokLlmGatewayOptions {
   readonly secretStore: SecretStorePort;
   readonly adapters?: readonly LlmProviderAdapter[];
+  readonly fetchFn?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
 function resolveEffectiveTokenCeiling(config: ByokConfig): number | undefined {
@@ -105,9 +106,9 @@ export class ByokLlmGateway implements LlmGatewayPort {
   constructor(options: ByokLlmGatewayOptions) {
     this.secretStore = options.secretStore;
     const configuredAdapters = options.adapters ?? [
-      new GeminiAdapter(),
-      new OpenAiCompatibleAdapter(),
-      new GithubCopilotAdapter(),
+      new GeminiAdapter({ fetchFn: options.fetchFn }),
+      new OpenAiCompatibleAdapter({ fetchFn: options.fetchFn }),
+      new GithubCopilotAdapter({ fetchFn: options.fetchFn }),
     ];
     for (const adapter of configuredAdapters) {
       this.adaptersByProvider.set(adapter.provider, adapter);

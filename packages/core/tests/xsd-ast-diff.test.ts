@@ -351,4 +351,62 @@ describe('XsdOracleBridge & computeXsdAstDiff', () => {
     );
     expect(vprodTypeMismatch).toBeUndefined();
   }, 30_000);
+
+  it('XD-07: scopes multi-DFe XSD bundles (e.g. PL_CTe with CTEPROC + GTVEPROC) to registryEntry.tagPrefix', () => {
+    const gtveRegistry: OracleRegistryEntry = {
+      dfe: 'GTVe',
+      basePackage: 'br.gov.mg.fazenda.gtveparser',
+      domainPackage: 'br.gov.mg.fazenda.gtveparser.gtve',
+      mapperPackage: 'br.gov.mg.fazenda.gtveparser.mapper',
+      tablePackage: 'br.gov.mg.fazenda.gtveparser.table',
+      parserPackage: 'br.gov.mg.fazenda.gtveparser.parser',
+      utilPackage: 'br.gov.mg.fazenda.gtveparser.util',
+      tagPrefix: 'GTVEPROC',
+    };
+
+    const xsd: ExtractXsdResult = {
+      rootElements: ['CTEPROC', 'CTEOSPROC', 'GTVEPROC'],
+      nodes: [
+        { tagPath: 'CTEPROC.CTE.INFCTE.IDE.CFOP', xsdType: 'xs:string', minOccurs: 1, maxOccurs: 1, isAttribute: false },
+        { tagPath: 'CTEOSPROC.CTEOS.INFCTE.IDE.CFOP', xsdType: 'xs:string', minOccurs: 1, maxOccurs: 1, isAttribute: false },
+        { tagPath: 'GTVEPROC.GTVE.INFCTE.IDE.CUF', xsdType: 'TCodUF', minOccurs: 1, maxOccurs: 1, isAttribute: false },
+        { tagPath: 'GTVEPROC.GTVE.INFCTE.DEST.CNPJ', xsdType: 'TCnpj', minOccurs: 1, maxOccurs: 1, isAttribute: false },
+      ],
+    };
+
+    const ast: ExtractJavaAstResult = {
+      setterKeys: [
+        { fullTagPath: 'GTVEPROC.GTVE.INFCTE.IDE.CUF', leafTag: 'CUF', mapperClass: 'GtveMapper', targetDtoField: 'cUf' },
+      ],
+      jsonProperties: [],
+      tableFields: [],
+    };
+
+    const findings = computeXsdAstDiff({ xsd, ast, registryEntry: gtveRegistry });
+    expect(findings.map((f) => f.tagPath)).toEqual(['GTVEPROC.GTVE.INFCTE.DEST.CNPJ']);
+  });
+
+  it('XD-08: matches PL_010b NFE.* XSD nodes against NFEPROC.* Java AST setters and ignores XMLDSig SIGNATURE nodes', () => {
+    const xsd: ExtractXsdResult = {
+      rootElements: ['SIGNATURE', 'NFE'],
+      nodes: [
+        { tagPath: 'SIGNATURE.ID', xsdType: 'xs:ID', minOccurs: 0, maxOccurs: 1, isAttribute: true },
+        { tagPath: 'NFE.INFNFE.IDE.CUF', xsdType: 'TCodUF', minOccurs: 1, maxOccurs: 1, isAttribute: false },
+        { tagPath: 'NFE.INFNFE.DET.PROD.NVE', xsdType: 'xs:string', minOccurs: 0, maxOccurs: 8, isAttribute: false },
+        { tagPath: 'NFE.INFNFE.TOTAL.ICMSTOT.VIBSCBS', xsdType: 'TDec_1302', minOccurs: 0, maxOccurs: 1, isAttribute: false },
+      ],
+    };
+
+    const ast: ExtractJavaAstResult = {
+      setterKeys: [
+        { fullTagPath: 'NFEPROC.NFE.INFNFE.IDE.CUF', leafTag: 'CUF', mapperClass: 'NfeMapper', targetDtoField: 'cUf' },
+        { fullTagPath: 'NFEPROC.NFE.INFNFE.DET.NVE', leafTag: 'NVE', mapperClass: 'NveMapper', targetDtoField: 'nve' },
+      ],
+      jsonProperties: [],
+      tableFields: [],
+    };
+
+    const findings = computeXsdAstDiff({ xsd, ast, registryEntry: NFE_REGISTRY_ENTRY });
+    expect(findings.map((f) => f.tagPath)).toEqual(['NFE.INFNFE.TOTAL.ICMSTOT.VIBSCBS']);
+  });
 });

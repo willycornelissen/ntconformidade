@@ -15,11 +15,20 @@ const NAV_ITEMS: ReadonlyArray<{ readonly id: NavTabId; readonly label: string }
 export interface LayoutProps {
   readonly activeTab: NavTabId;
   readonly onSelectTab: (tab: NavTabId) => void;
+  readonly onGoHome?: () => void;
   readonly latestProgress: RunProgressEvent | null;
   readonly children: ReactNode;
 }
 
-export function Layout({ activeTab, onSelectTab, latestProgress, children }: LayoutProps) {
+export function Layout({ activeTab, onSelectTab, onGoHome, latestProgress, children }: LayoutProps) {
+  function handleNavClick(tab: NavTabId): void {
+    if (tab === 'dashboard' && onGoHome) {
+      onGoHome();
+      return;
+    }
+    onSelectTab(tab);
+  }
+
   return (
     <div className="app-shell">
       <header className="top-header">
@@ -31,7 +40,7 @@ export function Layout({ activeTab, onSelectTab, latestProgress, children }: Lay
               type="button"
               className="nav-tab"
               aria-current={activeTab === item.id ? 'page' : undefined}
-              onClick={() => onSelectTab(item.id)}
+              onClick={() => handleNavClick(item.id)}
             >
               {item.label}
             </button>

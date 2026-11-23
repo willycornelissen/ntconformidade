@@ -142,8 +142,9 @@ export function assertSafeXsdContent(bytes: Buffer, label: string): void {
   const decoded = decodeXsdText(bytes);
   if (
     /<!DOCTYPE\b|<!ENTITY\b/i.test(decoded) ||
-    /<\s*(?:[A-Za-z_][\w.-]*:)?include\b/i.test(decoded) ||
-    /http:\/\/www\.w3\.org\/2001\/XInclude/i.test(decoded)
+    /http:\/\/www\.w3\.org\/2001\/XInclude/i.test(decoded) ||
+    /<\s*(?:xi|xinclude):include\b/i.test(decoded) ||
+    /<\s*(?:[A-Za-z_][\w.-]*:)?include\b[^>]*\bhref\s*=/i.test(decoded)
   ) {
     throw new Error(`XSD contém DOCTYPE/ENTITY/XInclude proibido (XXE): ${label}`);
   }
@@ -189,8 +190,8 @@ function parseZipCentralDirectory(zipBuf: Buffer): { entries: ZipCentralEntry[];
       throw new Error('Cabeçalho central PKZIP corrompido ou truncado');
     }
     const flags = zipBuf.readUInt16LE(cursor + 8);
-    if ((flags & 0x01) !== 0 || (flags & 0x08) !== 0) {
-      throw new Error('Entradas ZIP criptografadas ou com data descriptor não são permitidas');
+    if ((flags & 0x41) !== 0) {
+      throw new Error('Entradas ZIP criptografadas não são permitidas');
     }
     const nameLen = zipBuf.readUInt16LE(cursor + 28);
     const extraLen = zipBuf.readUInt16LE(cursor + 30);
@@ -221,6 +222,10 @@ function readZipEntryBytes(zipBuf: Buffer, entry: ZipCentralEntry, cdOffset: num
   const off = entry.localHeaderOffset;
   if (off + 30 > cdOffset || zipBuf.readUInt32LE(off) !== 0x04034b50) {
     throw new Error(`Local header ZIP inválido para ${entry.name}`);
+  }
+  const localFlags = zipBuf.readUInt16LE(off + 6);
+  if ((localFlags & 0x41) !== 0) {
+    throw new Error(`Entradas ZIP criptografadas não são permitidas: ${entry.name}`);
   }
   if (entry.compressedSize > MAX_ZIP_ENTRY_BYTES || entry.uncompressedSize > MAX_ZIP_ENTRY_BYTES) {
     throw new Error(`Entrada ZIP excede limite de tamanho (${MAX_ZIP_ENTRY_BYTES} bytes): ${entry.name}`);

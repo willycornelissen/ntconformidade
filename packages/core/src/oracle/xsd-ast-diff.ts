@@ -272,6 +272,7 @@ function findMatchingSetter(
   xsdTagPath: string,
   exactByPath: ReadonlyMap<string, SetterKeyEntry>,
   byLeafTag: ReadonlyMap<string, readonly SetterKeyEntry[]>,
+  tagPrefixUpper?: string,
 ): SetterKeyEntry | undefined {
   const normalizedXsd = xsdTagPath.trim().toUpperCase();
   const exact = exactByPath.get(normalizedXsd);
@@ -289,7 +290,13 @@ function findMatchingSetter(
   const candidates = byLeafTag.get(leaf) ?? [];
   return candidates.find((candidate) => {
     const astParents = candidate.fullTagPath.toUpperCase().split('.').slice(0, -1);
-    return isOrderedSegmentSubsequence(astParents, xsdParents);
+    if (isOrderedSegmentSubsequence(astParents, xsdParents)) {
+      return true;
+    }
+    if (tagPrefixUpper && astParents[0] === tagPrefixUpper) {
+      return isOrderedSegmentSubsequence(astParents.slice(1), xsdParents);
+    }
+    return false;
   });
 }
 
@@ -425,11 +432,19 @@ export function computeXsdAstDiff(
 ): readonly StructuralDiffFinding[] {
   const exactByPath = new Map<string, SetterKeyEntry>();
   const byLeafTag = new Map<string, SetterKeyEntry[]>();
+  const tagPrefixUpper = input.registryEntry.tagPrefix.trim().toUpperCase();
+  const rootPrefixDot = `${tagPrefixUpper}.`;
 
   for (const setter of input.ast.setterKeys) {
     const upperFullPath = setter.fullTagPath.toUpperCase();
     if (!exactByPath.has(upperFullPath)) {
       exactByPath.set(upperFullPath, setter);
+    }
+    if (upperFullPath.startsWith(rootPrefixDot)) {
+      const stripped = upperFullPath.slice(rootPrefixDot.length);
+      if (!exactByPath.has(stripped)) {
+        exactByPath.set(stripped, setter);
+      }
     }
     const upperLeaf = setter.leafTag.toUpperCase();
     const list = byLeafTag.get(upperLeaf) ?? [];
@@ -437,14 +452,28 @@ export function computeXsdAstDiff(
     byLeafTag.set(upperLeaf, list);
   }
 
-  const containerPaths = buildContainerPathSet(input.xsd.nodes);
+  const hasScopedPrefixNodes = input.xsd.nodes.some((n) => {
+    const upper = n.tagPath.toUpperCase();
+    return upper === tagPrefixUpper || upper.startsWith(rootPrefixDot);
+  });
+  const scopedNodes = hasScopedPrefixNodes
+    ? input.xsd.nodes.filter((n) => {
+        const upper = n.tagPath.toUpperCase();
+        return upper === tagPrefixUpper || upper.startsWith(rootPrefixDot);
+      })
+    : input.xsd.nodes.filter((n) => {
+        const upper = n.tagPath.toUpperCase();
+        return tagPrefixUpper === 'SIGNATURE' || (upper !== 'SIGNATURE' && !upper.startsWith('SIGNATURE.'));
+      });
+
+  const containerPaths = buildContainerPathSet(scopedNodes);
   const findings: StructuralDiffFinding[] = [];
 
-  for (const node of input.xsd.nodes) {
+  for (const node of scopedNodes) {
     if (containerPaths.has(node.tagPath.toUpperCase())) {
       continue;
     }
-    const setter = findMatchingSetter(node.tagPath, exactByPath, byLeafTag);
+    const setter = findMatchingSetter(node.tagPath, exactByPath, byLeafTag, tagPrefixUpper);
     const finding = evaluateNodeDiff(node, setter, input.fieldTypes);
     if (finding) {
       findings.push(finding);

@@ -18,6 +18,7 @@ export interface SettingsByokDoctorProps {
   readonly api: NtcDesktopApi;
   readonly byokConfig: ByokConfig;
   readonly onChangeConfig: (next: ByokConfig) => void;
+  readonly onGoHome?: () => void;
 }
 
 function buildSwitchedConfig(
@@ -355,7 +356,12 @@ function DoctorDiagnosticsSection({
   );
 }
 
-export function SettingsByokDoctor({ api, byokConfig, onChangeConfig }: SettingsByokDoctorProps) {
+export function SettingsByokDoctor({
+  api,
+  byokConfig,
+  onChangeConfig,
+  onGoHome,
+}: SettingsByokDoctorProps) {
   const [secretStatus, setSecretStatus] = useState<Record<string, boolean>>({});
   const [giteaPatInput, setGiteaPatInput] = useState('');
   const [llmKeyInput, setLlmKeyInput] = useState('');
@@ -478,7 +484,14 @@ export function SettingsByokDoctor({ api, byokConfig, onChangeConfig }: Settings
 
   return (
     <section className="card">
-      <h2>BYOK, Segredos e Doctor</h2>
+      <div className="section-header">
+        <h2>BYOK, Segredos e Doctor</h2>
+        {onGoHome && (
+          <button type="button" className="btn" onClick={onGoHome}>
+            Voltar à Tela Inicial
+          </button>
+        )}
+      </div>
       {statusMessage && (
         <p className="alert alert-ok" role="status">
           {statusMessage}
