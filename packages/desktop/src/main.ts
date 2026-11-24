@@ -1,4 +1,4 @@
-import { accessSync, constants as fsConstants, readFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -9,6 +9,7 @@ import {
   type NtcDatabase,
 } from '@ntc/core';
 import { createDesktopIpcController } from './ipc-handlers.js';
+import { createCertificateVerifyProc } from './cert-verifier.js';
 import { SafeStorageSecretStore } from './secret-store.js';
 
 export const STRICT_CSP_HEADER =
@@ -167,6 +168,7 @@ function applySessionSecurityPolicies(session: Electron.Session): void {
     callback(false);
   });
   session.setPermissionCheckHandler?.(() => false);
+  session.setCertificateVerifyProc(createCertificateVerifyProc());
   session.webRequest.onHeadersReceived((details, callback) => {
     const cleanedHeaders: Record<string, string | string[]> = {};
     for (const [headerName, headerValue] of Object.entries(details.responseHeaders ?? {})) {
@@ -230,9 +232,57 @@ export function configureLinuxKeyringBackend(options: {
   return true;
 }
 
+/**
+ * On WSL2/WSLg or Linux hosts without `/dev/dri`, Chromium's hardware GPU process often fails
+ * initialization (`viz_main_impl.cc` / `GpuControl.CreateCommandBuffer`). Disabling hardware
+ * acceleration before `app.whenReady()` prevents GPU process crashes while keeping the sandbox
+ * active via software rendering. Set `NTC_DISABLE_GPU=0` to opt out or `NTC_DISABLE_GPU=1` to force.
+ */
+export function configureLinuxGpuAcceleration(options: {
+  readonly platform: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly commandLine: {
+    hasSwitch(name: string): boolean;
+    appendSwitch(name: string, value?: string): void;
+  };
+  readonly disableHardwareAcceleration: () => void;
+  readonly hasDriDevice?: () => boolean;
+}): boolean {
+  const override = options.env.NTC_DISABLE_GPU?.trim().toLowerCase();
+  if (override === '0' || override === 'false') {
+    return false;
+  }
+  const forceDisable = override === '1' || override === 'true';
+  if (!forceDisable) {
+    if (options.platform !== 'linux') {
+      return false;
+    }
+    const isWsl = Boolean(
+      options.env.WSL_DISTRO_NAME?.trim() ||
+        options.env.WSL_INTEROP?.trim() ||
+        options.env.WSL2_GUI_APPS_ENABLED?.trim(),
+    );
+    const hasDri = options.hasDriDevice ? options.hasDriDevice() : existsSync('/dev/dri');
+    if (!isWsl && hasDri) {
+      return false;
+    }
+  }
+  options.disableHardwareAcceleration();
+  if (!options.commandLine.hasSwitch('disable-gpu')) {
+    options.commandLine.appendSwitch('disable-gpu');
+  }
+  return true;
+}
+
 /** Boots Electron BrowserWindow, SQLite WAL database, SafeStorage vault, CSP, and IPC channels. */
 export async function bootstrapDesktopApp(): Promise<void> {
   const { app, BrowserWindow, ipcMain, Menu, net, safeStorage, session } = await import('electron');
+  configureLinuxGpuAcceleration({
+    platform: process.platform,
+    env: process.env,
+    commandLine: app.commandLine,
+    disableHardwareAcceleration: () => app.disableHardwareAcceleration(),
+  });
   configureLinuxKeyringBackend({
     platform: process.platform,
     env: process.env,

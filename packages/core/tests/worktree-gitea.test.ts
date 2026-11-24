@@ -135,6 +135,8 @@ describe('WorktreeManager & GiteaAdapter', () => {
     const seenArgs: Array<readonly string[]> = [];
     let askpassScriptExistedDuringRun = false;
     let askpassScriptPath = '';
+    let askpassUsernameOut = '';
+    let askpassPasswordOut = '';
 
     const manager = new WorktreeManager({
       secretStore: makeSecretStore('gitea-pat-secret-999'),
@@ -145,6 +147,14 @@ describe('WorktreeManager & GiteaAdapter', () => {
         if (askpass) {
           askpassScriptPath = askpass;
           askpassScriptExistedDuringRun = existsSync(askpass);
+          askpassUsernameOut = execFileSync(askpass, ["Username for 'https://gitea.apps.ticio.fazenda.mg.gov.br':"], {
+            env: options?.env,
+            encoding: 'utf8',
+          }).trim();
+          askpassPasswordOut = execFileSync(askpass, ["Password for 'https://gitea.apps.ticio.fazenda.mg.gov.br':"], {
+            env: options?.env,
+            encoding: 'utf8',
+          }).trim();
         }
         return { stdout: 'ok', stderr: '' };
       },
@@ -160,7 +170,17 @@ describe('WorktreeManager & GiteaAdapter', () => {
     const pushArgs = seenArgs.find((a) => a.includes('push'));
     expect(pushArgs?.join(' ')).not.toContain('gitea-pat-secret-999');
     expect(askpassScriptExistedDuringRun).toBe(true);
+    expect(askpassUsernameOut).toBe('gitea-pat-secret-999');
+    expect(askpassPasswordOut).toBe('x-oauth-basic');
     expect(existsSync(askpassScriptPath)).toBe(false);
+
+    const missingPatMgr = new WorktreeManager({
+      secretStore: makeSecretStore(''),
+      execFileFn: async () => {
+        throw new Error("remote: Failed to authenticate user\nfatal: Authentication failed for 'https://gitea/repo/'");
+      },
+    });
+    await expect(missingPatMgr.getRemoteBranchHead(SAMPLE_REPO, 'main')).rejects.toThrow(/ntc:gitea:pat.*BYOK & Doctor/i);
   });
 
   it('WG-04: parseGiteaRepoUrl & GiteaAdapter openPullRequest send token auth, scrub secrets, and handle 409', async () => {

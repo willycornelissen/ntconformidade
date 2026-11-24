@@ -48,8 +48,12 @@ export function buildComplianceAnalysisPrompt(input: LlmComplianceAnalysisInput)
     'Responda EXCLUSIVAMENTE com um objeto JSON válido com os campos obrigatórios:',
     'nc_id, nt_ref { dfe, nt_number, nt_version, published_date, pdf_sha256 }, base_commit_sha, no_structural_gaps,',
     'items [{ id, category (STRUCTURAL_MAPPER|STRUCTURAL_DTO|STRUCTURAL_TABLE|SHARED_XML_PARSER_BLOCKER|SEMANTIC_RULE_INFO_ONLY),',
-    'decision (APPROVE|SKIP|EDIT), title, description, tagPath, targetPackage, targetClass, diffKind, pdfCitations, suggestedChange, editedNotes, blockerReason }],',
-    'created_at, updated_at.',
+    'decision (APPROVE|SKIP|EDIT), title, description, tagPath (string|null),',
+    'targetPackage ("mapper"|"domain"|"table"|"xml-parser"|"none"|null), targetClass (string|null),',
+    'diffKind ("MISSING_TAG"|"CARDINALITY_MISMATCH"|"TYPE_MISMATCH"|null),',
+    'pdfCitations (string[]), suggestedChange (string|null), editedNotes (string|null), blockerReason (string|null) }],',
+    'created_at (ISO 8601 UTC com Z), updated_at (ISO 8601 UTC com Z).',
+    'Para itens SEMANTIC_RULE_INFO_ONLY use targetPackage="none" e diffKind=null.',
     'Inclua citações no formato "p. N" em pdfCitations para toda evidência extraída da NT.',
   ].join(' ');
 
@@ -70,7 +74,7 @@ export function buildComplianceAnalysisPrompt(input: LlmComplianceAnalysisInput)
   const userPrompt = [
     `## Repositório Alvo\nDFE: ${input.repo.dfe} (${input.repo.repoSlug})\nCommit base: ${input.baseCommitSha}`,
     `Pacotes: base=${input.repo.basePackage}, domain=${input.repo.domainPackage}, mapper=${input.repo.mapperPackage}, table=${input.repo.tablePackage}, parser=${input.repo.parserPackage}`,
-    `## Nota Técnica\nID: ${input.nt.id}\nNT ${input.nt.ntNumber} v${input.nt.ntVersion} (${input.nt.publishedDate})`,
+    `## Nota Técnica\nID: ${input.nt.id}\nNT ${input.nt.ntNumber} v${input.nt.ntVersion} (${input.nt.publishedDate})\nPDF SHA-256: ${input.pdf.pdfSha256}`,
     `## Achados Determinísticos (XSD × AST)\n${diffSummary}`,
     `## Conteúdo da Nota Técnica\n${pdfPagesText}`,
     `## Contexto Java Allowlisted\n${formatJavaContextFiles(input.javaContextFiles)}`,

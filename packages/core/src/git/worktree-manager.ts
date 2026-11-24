@@ -64,8 +64,8 @@ async function createEphemeralAskpass(
   const isWin = process.platform === 'win32';
   const scriptPath = path.join(dir, isWin ? 'askpass.cmd' : 'askpass.sh');
   const scriptBody = isWin
-    ? `@echo off\r\n"${process.execPath}" -e "var a=process.argv[1]||'';process.stdout.write(/^username/i.test(a)?'x-access-token\\n':(process.env.NTC_GIT_ASKPASS_TOKEN||'')+'\\n')" "%~1"\r\n`
-    : '#!/bin/sh\ncase "$1" in [Uu]sername*) printf "%s\\n" "x-access-token" ;; *) printf "%s\\n" "$NTC_GIT_ASKPASS_TOKEN" ;; esac\n';
+    ? `@echo off\r\n"${process.execPath}" -e "var a=process.argv[1]||'';process.stdout.write(/^username/i.test(a)?(process.env.NTC_GIT_ASKPASS_TOKEN||'')+'\\n':'x-oauth-basic\\n')" "%~1"\r\n`
+    : '#!/bin/sh\ncase "$1" in [Uu]sername*) printf "%s\\n" "$NTC_GIT_ASKPASS_TOKEN" ;; *) printf "%s\\n" "x-oauth-basic" ;; esac\n';
 
   try {
     await writeFile(scriptPath, scriptBody, { encoding: 'utf8', mode: 0o700 });
@@ -276,7 +276,18 @@ export class WorktreeManager {
     } catch (error) {
       const details = extractExecFailureDetails(error);
       const raw = [details.message, details.stderr].filter(Boolean).join(' | ');
-      throw new Error(`Falha Git remoto: ${scrubSecret(raw, pat ?? undefined)}`);
+      const cleaned = scrubSecret(raw, pat ?? undefined);
+      if (/authentication failed|failed to authenticate/i.test(raw)) {
+        if (!pat || pat.trim().length === 0) {
+          throw new Error(
+            `Falha Git remoto: Token Gitea PAT ('${GITEA_PAT_SECRET_KEY}') não configurado. Cadastre-o na aba BYOK & Doctor. (${cleaned})`,
+          );
+        }
+        throw new Error(
+          `Falha Git remoto: Autenticação recusada pelo Gitea — verifique se o Token Gitea PAT ('${GITEA_PAT_SECRET_KEY}') na aba BYOK & Doctor é válido e tem acesso ao repositório. (${cleaned})`,
+        );
+      }
+      throw new Error(`Falha Git remoto: ${cleaned}`);
     } finally {
       if (askpass) {
         await rm(askpass.dir, { recursive: true, force: true }).catch(() => undefined);

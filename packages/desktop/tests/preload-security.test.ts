@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '@ntc/core';
 import {
   buildHardenedWebPreferences,
   buildMainWindowOptions,
+  configureLinuxGpuAcceleration,
   configureLinuxKeyringBackend,
   isAllowedNavigationUrl,
   resolveDevServerUrl,
@@ -148,6 +149,52 @@ describe('Preload Bridge & Electron BrowserWindow Security', () => {
         commandLine: { hasSwitch: () => false, appendSwitch: () => undefined },
       }),
     ).toBe(false);
+
+    const gpuSwitches: Array<[string, string | undefined]> = [];
+    let hwAccelDisabled = 0;
+    expect(
+      configureLinuxGpuAcceleration({
+        platform: 'linux',
+        env: { WSL_DISTRO_NAME: 'Ubuntu-24.04' },
+        commandLine: {
+          hasSwitch: () => false,
+          appendSwitch: (k, v) => gpuSwitches.push([k, v]),
+        },
+        disableHardwareAcceleration: () => {
+          hwAccelDisabled += 1;
+        },
+        hasDriDevice: () => true,
+      }),
+    ).toBe(true);
+    expect(hwAccelDisabled).toBe(1);
+    expect(gpuSwitches).toEqual([['disable-gpu', undefined]]);
+
+    // Native Linux with /dev/dri keeps hardware acceleration enabled
+    expect(
+      configureLinuxGpuAcceleration({
+        platform: 'linux',
+        env: {},
+        commandLine: { hasSwitch: () => false, appendSwitch: () => undefined },
+        disableHardwareAcceleration: () => {
+          hwAccelDisabled += 1;
+        },
+        hasDriDevice: () => true,
+      }),
+    ).toBe(false);
+
+    // Explicit opt-out via NTC_DISABLE_GPU=0
+    expect(
+      configureLinuxGpuAcceleration({
+        platform: 'linux',
+        env: { WSL_DISTRO_NAME: 'Ubuntu-24.04', NTC_DISABLE_GPU: '0' },
+        commandLine: { hasSwitch: () => false, appendSwitch: () => undefined },
+        disableHardwareAcceleration: () => {
+          hwAccelDisabled += 1;
+        },
+        hasDriDevice: () => false,
+      }),
+    ).toBe(false);
+    expect(hwAccelDisabled).toBe(1);
 
     expect(STRICT_CSP_HEADER).toContain("default-src 'self'");
     expect(STRICT_CSP_HEADER).toContain("object-src 'none'");

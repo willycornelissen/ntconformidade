@@ -663,4 +663,186 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
     expect(extractJsonFromLlmText('Here is JSON: {"ok":true} done')).toEqual({ ok: true });
     expect(() => extractJsonFromLlmText('prose {bad json} tail')).toThrow(/não contém JSON/i);
   });
+
+  it('LG-09: normalizes LLM NC metadata, Java package aliases, and diffKind synonyms while rejecting NT mismatch', async () => {
+    let capturedPrompt = '';
+    const llmDraftWithQuirks = {
+      nc_id: 'NC-2025.002-v1.30',
+      nt_ref: {
+        dfe: 'NFe',
+        nt_number: '2025.002',
+        nt_version: '1.30',
+        published_date: '2025-10-15',
+        pdf_sha256: 'not-a-valid-sha256',
+      },
+      base_commit_sha: 'invalid-sha',
+      no_structural_gaps: false,
+      items: [
+        {
+          id: 'NC-1',
+          category: 'STRUCTURAL_MAPPER',
+          decision: 'APPROVE',
+          title: 'Mapear tag',
+          description: 'Adicionar mapeamento',
+          tagPath: 'NFEPROC.NFE.INFNFE.TOTAL.ICMSTOT.VIBSCBS',
+          targetPackage: 'br.gov.mg.fazenda.nfeparser.mapper',
+          targetClass: 'TotalMapper',
+          diffKind: 'NEW_TAG',
+          pdfCitations: ['p. 1'],
+          suggestedChange: null,
+          editedNotes: null,
+          blockerReason: null,
+        },
+        {
+          id: 'NC-2',
+          category: 'STRUCTURAL_DTO',
+          decision: 'APPROVE',
+          title: 'Adicionar campo DTO',
+          description: 'Adicionar campo no DTO',
+          tagPath: 'NFEPROC.NFE.INFNFE.TOTAL.ICMSTOT.VIBSCBS',
+          targetPackage: 'nfe',
+          targetClass: 'IcmsTot',
+          diffKind: 'CARDINALITY',
+          pdfCitations: ['p. 1'],
+        },
+        {
+          id: 'NC-3',
+          category: 'STRUCTURAL_TABLE',
+          decision: 'APPROVE',
+          title: 'Atualizar tabela',
+          description: 'Atualizar tipo na tabela',
+          tagPath: '',
+          targetPackage: 'br.gov.mg.fazenda.nfeparser.table',
+          targetClass: '',
+          diffKind: 'TYPE',
+          pdfCitations: ['p. 2'],
+        },
+        {
+          id: 'NC-4',
+          category: 'SHARED_XML_PARSER_BLOCKER',
+          decision: 'APPROVE',
+          title: 'Parser compartilhado',
+          description: 'Alteração no parser',
+          tagPath: null,
+          targetPackage: 'br.gov.mg.fazenda.nfeparser.parser',
+          targetClass: null,
+          diffKind: '',
+          pdfCitations: [],
+          blockerReason: 'Requer ajuste em xml-parser',
+        },
+        {
+          id: 'NC-5',
+          category: 'SEMANTIC_RULE_INFO_ONLY',
+          decision: 'SKIP',
+          title: 'Regra de validação W01',
+          description: 'Informativo semântico',
+          tagPath: null,
+          targetPackage: 'none',
+          targetClass: null,
+          diffKind: 'VALIDATION_RULE',
+          pdfCitations: ['p. 2'],
+        },
+      ],
+      created_at: '2026-11-24T10:00:00',
+      updated_at: 'invalid-date',
+    };
+
+    const gateway = new ByokLlmGateway({
+      secretStore: makeSecretStore({ 'ntc:llm:gemini': 'AIza-valid' }),
+      adapters: [
+        new GeminiAdapter({
+          fetchFn: async (_url, init) => {
+            capturedPrompt = String(init.body);
+            return new Response(
+              JSON.stringify({
+                candidates: [{ content: { parts: [{ text: JSON.stringify(llmDraftWithQuirks) }] } }],
+                usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 30, totalTokenCount: 80 },
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          },
+        }),
+      ],
+    });
+
+    const res = await gateway.analyzeCompliance({
+      config: {
+        provider: 'gemini',
+        modelId: 'gemini-2.5-pro',
+        operatorName: 'Op',
+        secretKeyRef: 'ntc:llm:gemini',
+      },
+      repo: BASE_REPO,
+      nt: { ...BASE_NT, ntVersion: 'v1.30' },
+      baseCommitSha: '2'.repeat(40),
+      pdf: BASE_PDF,
+      diffFindings: [],
+      javaContextFiles: [{ filePath: 'src/main/java/br/gov/mg/fazenda/nfeparser/nfe/Nfe.java', content: 'class Nfe {}' }],
+    });
+
+    expect(capturedPrompt).toContain(BASE_PDF.pdfSha256);
+    expect(capturedPrompt).toContain('targetPackage (\\"mapper\\"|\\"domain\\"|\\"table\\"|\\"xml-parser\\"|\\"none\\"|null)');
+    expect(res.nc.nt_ref.nt_version).toBe('v1.30');
+    expect(res.nc.nt_ref.pdf_sha256).toBe(BASE_PDF.pdfSha256);
+    expect(res.nc.base_commit_sha).toBe('2'.repeat(40));
+    expect(res.nc.items.map((i) => i.targetPackage)).toEqual([
+      'mapper',
+      'domain',
+      'table',
+      'xml-parser',
+      'none',
+    ]);
+    expect(res.nc.items.map((i) => i.diffKind)).toEqual([
+      'MISSING_TAG',
+      'CARDINALITY_MISMATCH',
+      'TYPE_MISMATCH',
+      null,
+      null,
+    ]);
+
+    const mismatchedGateway = new ByokLlmGateway({
+      secretStore: makeSecretStore({ 'ntc:llm:gemini': 'AIza-valid' }),
+      adapters: [
+        new GeminiAdapter({
+          fetchFn: async () =>
+            new Response(
+              JSON.stringify({
+                candidates: [
+                  {
+                    content: {
+                      parts: [
+                        {
+                          text: JSON.stringify({
+                            ...llmDraftWithQuirks,
+                            nt_ref: { ...llmDraftWithQuirks.nt_ref, dfe: 'CTe' },
+                          }),
+                        },
+                      ],
+                    },
+                  },
+                ],
+                usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10, totalTokenCount: 20 },
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        }),
+      ],
+    });
+    await expect(
+      mismatchedGateway.analyzeCompliance({
+        config: {
+          provider: 'gemini',
+          modelId: 'gemini-2.5-pro',
+          operatorName: 'Op',
+          secretKeyRef: 'ntc:llm:gemini',
+        },
+        repo: BASE_REPO,
+        nt: BASE_NT,
+        baseCommitSha: '2'.repeat(40),
+        pdf: BASE_PDF,
+        diffFindings: [],
+        javaContextFiles: [{ filePath: 'src/main/java/br/gov/mg/fazenda/nfeparser/nfe/Nfe.java', content: 'class Nfe {}' }],
+      }),
+    ).rejects.toThrow(/diverge da NT analisada/i);
+  });
 });

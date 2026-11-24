@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "build": "npm run typecheck && node scripts/workspace-runner.mjs build",
     "test": "node --test tests/*.test.mjs && node scripts/workspace-runner.mjs test",
-    "dev:desktop": "npm run dev --workspace=packages/desktop --if-present",
+    "dev:desktop": "npm run build --workspace=packages/core && npm run dev --workspace=packages/desktop --if-present",
     "package:win": "npm run build && npm run package:win --workspace=packages/desktop --if-present",
     "package:linux": "npm run build && npm run package:linux --workspace=packages/desktop --if-present",
     "rebuild:electron": "npm run rebuild --workspace=packages/desktop --if-present"
