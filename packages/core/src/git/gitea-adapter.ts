@@ -66,8 +66,9 @@ export class GiteaAdapter {
   }
 
   async openPullRequest(input: OpenGiteaPrInput): Promise<{ readonly prUrl: string }> {
-    const pat = await this.secretStore.getSecret(GITEA_PAT_SECRET_KEY);
-    if (!pat || pat.trim().length === 0) {
+    const rawPat = await this.secretStore.getSecret(GITEA_PAT_SECRET_KEY);
+    const pat = rawPat?.trim() ?? '';
+    if (pat.length === 0) {
       throw new Error(`Gitea PAT não configurado no keychain ('${GITEA_PAT_SECRET_KEY}')`);
     }
 

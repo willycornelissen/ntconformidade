@@ -229,8 +229,6 @@ export class WorktreeManager {
       input.commitMessage,
     ]);
     await this.runGitRemote([
-      '-c',
-      'http.followRedirects=false',
       '-C',
       input.worktreeDir,
       'push',
@@ -256,35 +254,50 @@ export class WorktreeManager {
   }
 
   private async runGitRemote(args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
-    const pat = this.secretStore ? await this.secretStore.getSecret(GITEA_PAT_SECRET_KEY) : null;
+    const rawPat = this.secretStore ? await this.secretStore.getSecret(GITEA_PAT_SECRET_KEY) : null;
+    const pat = rawPat?.trim() ?? '';
     let askpass: { readonly dir: string; readonly scriptPath: string; readonly token: string } | undefined;
     try {
       const env = buildSanitizedToolchainEnv();
       env.GIT_TERMINAL_PROMPT = '0';
-      if (pat && pat.trim().length > 0) {
+      env.LC_ALL = 'C';
+      env.LANG = 'C';
+      if (pat.length > 0) {
         askpass = await createEphemeralAskpass(this.tempDirRoot, pat);
         env.GIT_ASKPASS = askpass.scriptPath;
         env.NTC_GIT_ASKPASS_TOKEN = askpass.token;
+        if (process.platform === 'win32') {
+          env.ELECTRON_RUN_AS_NODE = '1';
+        }
       }
 
-      return await this.execFileFn(this.gitBin, ['-c', 'http.followRedirects=false', ...args], {
-        shell: false,
-        maxBuffer: GIT_MAX_BUFFER_BYTES,
-        timeout: this.timeoutMs,
-        env,
-      });
+      return await this.execFileFn(
+        this.gitBin,
+        ['-c', 'http.followRedirects=false', '-c', 'credential.helper=', ...args],
+        {
+          shell: false,
+          maxBuffer: GIT_MAX_BUFFER_BYTES,
+          timeout: this.timeoutMs,
+          env,
+        },
+      );
     } catch (error) {
       const details = extractExecFailureDetails(error);
       const raw = [details.message, details.stderr].filter(Boolean).join(' | ');
-      const cleaned = scrubSecret(raw, pat ?? undefined);
+      const cleaned = scrubSecret(raw, pat || undefined);
       if (/authentication failed|failed to authenticate/i.test(raw)) {
-        if (!pat || pat.trim().length === 0) {
+        if (pat.length === 0) {
           throw new Error(
             `Falha Git remoto: Token Gitea PAT ('${GITEA_PAT_SECRET_KEY}') não configurado. Cadastre-o na aba BYOK & Doctor. (${cleaned})`,
           );
         }
         throw new Error(
           `Falha Git remoto: Autenticação recusada pelo Gitea — verifique se o Token Gitea PAT ('${GITEA_PAT_SECRET_KEY}') na aba BYOK & Doctor é válido e tem acesso ao repositório. (${cleaned})`,
+        );
+      }
+      if (/returned error:\s*403|remote:\s*forbidden/i.test(raw)) {
+        throw new Error(
+          `Falha Git remoto: Acesso negado (403 Forbidden) pelo Gitea — confirme que o usuário dono do Token Gitea PAT ('${GITEA_PAT_SECRET_KEY}') possui acesso ao repositório e que o token inclui os escopos de repositório (read:repository / write:repository). (${cleaned})`,
         );
       }
       throw new Error(`Falha Git remoto: ${cleaned}`);

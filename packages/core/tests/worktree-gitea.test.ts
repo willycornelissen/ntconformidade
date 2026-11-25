@@ -139,7 +139,7 @@ describe('WorktreeManager & GiteaAdapter', () => {
     let askpassPasswordOut = '';
 
     const manager = new WorktreeManager({
-      secretStore: makeSecretStore('gitea-pat-secret-999'),
+      secretStore: makeSecretStore('  gitea-pat-secret-999\n'),
       execFileFn: async (_file, args, options) => {
         seenArgs.push(args);
         seenEnvs.push(options?.env);
@@ -169,6 +169,9 @@ describe('WorktreeManager & GiteaAdapter', () => {
 
     const pushArgs = seenArgs.find((a) => a.includes('push'));
     expect(pushArgs?.join(' ')).not.toContain('gitea-pat-secret-999');
+    expect(pushArgs).toContain('credential.helper=');
+    expect(pushArgs).toContain('http.followRedirects=false');
+    expect(seenEnvs.some((e) => e?.LC_ALL === 'C' && e?.LANG === 'C')).toBe(true);
     expect(askpassScriptExistedDuringRun).toBe(true);
     expect(askpassUsernameOut).toBe('gitea-pat-secret-999');
     expect(askpassPasswordOut).toBe('x-oauth-basic');
@@ -181,6 +184,16 @@ describe('WorktreeManager & GiteaAdapter', () => {
       },
     });
     await expect(missingPatMgr.getRemoteBranchHead(SAMPLE_REPO, 'main')).rejects.toThrow(/ntc:gitea:pat.*BYOK & Doctor/i);
+
+    const forbiddenMgr = new WorktreeManager({
+      secretStore: makeSecretStore('gitea-pat-limited-scope'),
+      execFileFn: async () => {
+        throw new Error("remote: Forbidden\nfatal: unable to access 'https://gitea/repo/': The requested URL returned error: 403");
+      },
+    });
+    await expect(forbiddenMgr.getRemoteBranchHead(SAMPLE_REPO, 'main')).rejects.toThrow(
+      /403 Forbidden.*read:repository/i,
+    );
   });
 
   it('WG-04: parseGiteaRepoUrl & GiteaAdapter openPullRequest send token auth, scrub secrets, and handle 409', async () => {
