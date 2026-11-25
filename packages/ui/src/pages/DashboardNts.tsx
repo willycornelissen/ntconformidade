@@ -8,13 +8,13 @@ import type {
   SvrsDfeSyncResult,
 } from '@ntc/core';
 import { ALL_DFES, isDfeCode, toErrorMessage } from '../api/helpers.js';
+import homeLogo from '../assets/home-logo.png';
 
 export interface DashboardNtsProps {
   readonly api: NtcDesktopApi;
   readonly byokConfig: ByokConfig;
   readonly homeResetKey?: number;
   readonly onDraftReady: (runId: string, xsdDir: string) => void;
-  readonly onOpenRunDiff?: (runId: string) => void;
 }
 
 interface DfeGroupSummary {
@@ -197,42 +197,57 @@ function ManualNtImportForm(props: {
 
 function DfeDocumentCardsGrid({
   groups,
+  ncRunByNtId,
   busy,
   onSelectDfe,
 }: {
   readonly groups: readonly DfeGroupSummary[];
+  readonly ncRunByNtId: ReadonlyMap<string, ComplianceRun>;
   readonly busy: boolean;
   readonly onSelectDfe: (dfe: DfeCode) => void;
 }) {
   return (
     <div className="dfe-grid">
-      {groups.map((group) => (
-        <button
-          key={group.dfe}
-          type="button"
-          className="dfe-card"
-          disabled={busy}
-          onClick={() => onSelectDfe(group.dfe)}
-        >
-          <div className="dfe-card-header">
-            <span className="dfe-card-title">{group.dfe}</span>
-            <span className={group.entries.length > 0 ? 'badge badge-ok' : 'badge badge-warn'}>
-              {group.entries.length} {group.entries.length === 1 ? 'NT' : 'NTs'}
+      {groups.map((group) => {
+        const verifiedCount = group.entries.filter((entry) => ncRunByNtId.has(entry.id)).length;
+        return (
+          <button
+            key={group.dfe}
+            type="button"
+            className="dfe-card"
+            disabled={busy}
+            onClick={() => onSelectDfe(group.dfe)}
+          >
+            <div className="dfe-card-header">
+              <span className="dfe-card-title">{group.dfe}</span>
+              <span className="dfe-card-badges">
+                <span className={group.entries.length > 0 ? 'badge badge-ok' : 'badge badge-warn'}>
+                  {group.entries.length} {group.entries.length === 1 ? 'NT' : 'NTs'}
+                </span>
+                {verifiedCount > 0 && (
+                  <span className="badge badge-ok">
+                    {verifiedCount} {verifiedCount === 1 ? 'verificada' : 'verificadas'}
+                  </span>
+                )}
+              </span>
+            </div>
+            {group.latestEntry ? (
+              <span className="dfe-card-meta">
+                Última: NT {group.latestEntry.ntNumber} ({group.latestEntry.ntVersion}) —{' '}
+                {formatBrDate(group.latestEntry.publishedDate)}
+              </span>
+            ) : (
+              <span className="dfe-card-meta">Nenhuma NT em cache.</span>
+            )}
+            {group.syncError && (
+              <span className="badge badge-danger">Erro coleta: {group.syncError}</span>
+            )}
+            <span className="dfe-card-footer" aria-hidden="true">
+              Abrir catálogo →
             </span>
-          </div>
-          {group.latestEntry ? (
-            <span className="dfe-card-meta">
-              Última: NT {group.latestEntry.ntNumber} ({group.latestEntry.ntVersion}) —{' '}
-              {formatBrDate(group.latestEntry.publishedDate)}
-            </span>
-          ) : (
-            <span className="dfe-card-meta">Nenhuma NT em cache.</span>
-          )}
-          {group.syncError && (
-            <span className="badge badge-danger">Erro coleta: {group.syncError}</span>
-          )}
-        </button>
-      ))}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -316,66 +331,11 @@ function NtCatalogTable({
   );
 }
 
-function RecentRunsTable({
-  runs,
-  busy,
-  onDraftReady,
-  onOpenRunDiff,
-}: {
-  readonly runs: readonly ComplianceRun[];
-  readonly busy: boolean;
-  readonly onDraftReady: (runId: string, xsdDir: string) => void;
-  readonly onOpenRunDiff?: (runId: string) => void;
-}) {
-  return (
-    <div style={{ marginTop: '1rem' }}>
-      <h3>Execuções Recentes</h3>
-      <table className="data-table">
-        <caption className="sr-only">Execuções de conformidade recentes</caption>
-        <thead>
-          <tr>
-            <th scope="col">Run ID</th>
-            <th scope="col">DFe</th>
-            <th scope="col">NT</th>
-            <th scope="col">Status</th>
-            <th scope="col">Ação</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((run) => (
-            <tr key={run.runId}>
-              <td>{run.runId}</td>
-              <td>{run.dfe}</td>
-              <td>{run.ntId}</td>
-              <td>{run.status}</td>
-              <td>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={busy}
-                  onClick={() =>
-                    run.status === 'DRAFT'
-                      ? onDraftReady(run.runId, '')
-                      : onOpenRunDiff?.(run.runId)
-                  }
-                >
-                  Abrir
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 export function DashboardNts({
   api,
   byokConfig,
   homeResetKey,
   onDraftReady,
-  onOpenRunDiff,
 }: DashboardNtsProps) {
   const [entries, setEntries] = useState<readonly NtCatalogEntry[]>([]);
   const [runs, setRuns] = useState<readonly ComplianceRun[]>([]);
@@ -558,40 +518,22 @@ export function DashboardNts({
   }
 
   const syncErrors = syncResults.filter((r) => r.error !== null);
+  const verifiedNtCount = entries.filter((entry) => ncRunByNtId.has(entry.id)).length;
 
-  return (
-    <section className="card">
-      <div className="section-header">
-        <h2>
-          {selectedDfe ? `Notas Técnicas — ${selectedDfe}` : 'Notas Técnicas por Documento Fiscal'}
-        </h2>
-        {selectedDfe && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            onClick={() => {
-              setSelectedDfe(null);
-              setSearchQuery('');
-            }}
-          >
-            Voltar à Tela Inicial
-          </button>
-        )}
+  const toolbarBlock = (
+    <div className="home-toolbar">
+      <div className="field home-search-field">
+        <label htmlFor="nt-search">{selectedDfe ? 'Buscar NT' : 'Filtrar DFe ou NT'}</label>
+        <input
+          id="nt-search"
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={selectedDfe ? 'Ex.: 2025.002' : 'Ex.: NFe ou 2025.002'}
+        />
       </div>
 
-      <div className="toolbar">
-        <div className="field">
-          <label htmlFor="nt-search">{selectedDfe ? 'Buscar NT' : 'Filtrar DFe ou NT'}</label>
-          <input
-            id="nt-search"
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={selectedDfe ? 'Ex.: 2025.002' : 'Ex.: NFe ou 2025.002'}
-          />
-        </div>
-
+      <div className="home-toolbar-actions">
         <button
           type="button"
           className="btn btn-primary"
@@ -612,7 +554,11 @@ export function DashboardNts({
           Importar NT Manual
         </button>
       </div>
+    </div>
+  );
 
+  const feedbackBlock = (
+    <>
       {statusMessage && (
         <p className="alert alert-ok" role="status">
           {statusMessage}
@@ -632,7 +578,6 @@ export function DashboardNts({
           ))}
         </div>
       )}
-
       {showManualForm && (
         <ManualNtImportForm
           busy={busy}
@@ -653,8 +598,30 @@ export function DashboardNts({
           }}
         />
       )}
+    </>
+  );
 
-      {selectedDfe ? (
+  if (selectedDfe) {
+    return (
+      <section className="card">
+        <div className="section-header">
+          <h2>Notas Técnicas — {selectedDfe}</h2>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              setSelectedDfe(null);
+              setSearchQuery('');
+            }}
+          >
+            Voltar à Tela Inicial
+          </button>
+        </div>
+
+        {toolbarBlock}
+        {feedbackBlock}
+
         <NtCatalogTable
           dfe={selectedDfe}
           entries={selectedDfeEntries}
@@ -667,25 +634,56 @@ export function DashboardNts({
             onDraftReady(run.runId, manualXsdMap[entry.id] || '');
           }}
         />
-      ) : (
+      </section>
+    );
+  }
+
+  return (
+    <div className="home-dashboard">
+      <section className="card home-hero">
+        <div className="home-hero-brand">
+          <img
+            src={homeLogo}
+            alt="DFe — Documento Fiscal Eletrônico"
+            className="home-hero-logo"
+          />
+        </div>
+        <div className="home-hero-content">
+          <h2>Notas Técnicas por Documento Fiscal</h2>
+          <p className="home-hero-subtitle">
+            Selecione um documento fiscal para consultar Notas Técnicas, verificar conformidade com os
+            parsers e revisar Notas de Conformidade.
+          </p>
+          <div className="home-stats">
+            <div className="home-stat">
+              <span className="home-stat-value">{ALL_DFES.length}</span>
+              <span className="home-stat-label">Documentos DF-e</span>
+            </div>
+            <div className="home-stat">
+              <span className="home-stat-value">{entries.length}</span>
+              <span className="home-stat-label">NTs em cache</span>
+            </div>
+            <div className="home-stat">
+              <span className="home-stat-value">{verifiedNtCount}</span>
+              <span className="home-stat-label">NTs verificadas</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        {toolbarBlock}
+        {feedbackBlock}
         <DfeDocumentCardsGrid
           groups={visibleGroups}
+          ncRunByNtId={ncRunByNtId}
           busy={busy}
           onSelectDfe={(dfe) => {
             setSelectedDfe(dfe);
             setSearchQuery('');
           }}
         />
-      )}
-
-      {runs.length > 0 && (
-        <RecentRunsTable
-          runs={runs}
-          busy={busy}
-          onDraftReady={onDraftReady}
-          onOpenRunDiff={onOpenRunDiff}
-        />
-      )}
-    </section>
+      </section>
+    </div>
   );
 }

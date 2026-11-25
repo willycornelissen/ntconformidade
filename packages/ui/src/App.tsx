@@ -60,13 +60,6 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
     setActiveTab('nc');
   }
 
-  function handleOpenRunDiff(runId: string): void {
-    setSelectedRunId(runId);
-    setApplyError(null);
-    setApplyOutcome(null);
-    setActiveTab('diff');
-  }
-
   function handleStartApply(request: {
     readonly runId: string;
     readonly byokConfig: ByokConfig;
@@ -115,7 +108,6 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
           byokConfig={byokConfig}
           homeResetKey={homeResetKey}
           onDraftReady={handleDraftReady}
-          onOpenRunDiff={handleOpenRunDiff}
         />
       )}
       {activeTab === 'repos' && <RepoRegistry api={api} onGoHome={handleGoHome} />}

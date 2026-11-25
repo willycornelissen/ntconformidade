@@ -218,10 +218,7 @@ describe('DashboardNts (CUJ 1)', () => {
     expect(onDraftReady).toHaveBeenCalledWith('run-new-1', '/tmp/cache/xsd');
   });
 
-  it('UI-DN-04: opens DRAFT runs in NcReview and TESTED runs in DiffAndPr', async () => {
-    const user = userEvent.setup();
-    const onDraftReady = vi.fn();
-    const onOpenRunDiff = vi.fn();
+  it('UI-DN-04: renders the DFe logo and summary metrics on the home screen without the Execuções Recentes table', async () => {
     const baseRun = {
       dfe: 'NFe' as const,
       ntId: 'NFe:2025.002:1.30',
@@ -229,7 +226,7 @@ describe('DashboardNts (CUJ 1)', () => {
       errorMessage: null,
       operatorName: 'Op',
       provider: 'gemini' as const,
-      modelId: 'gemini-2.5-pro',
+      modelId: 'gemini-3.1-pro-preview',
       baseCommitSha: '1'.repeat(40),
       branchName: null,
       ncJsonPath: 'NFe/NC.json',
@@ -240,7 +237,7 @@ describe('DashboardNts (CUJ 1)', () => {
     };
 
     const api = makeMockApi({
-      listNts: vi.fn(async () => [{ ...SAMPLE_NTS[0]!, sourceStatus: 'PARSE_ERROR' as const }]),
+      listNts: vi.fn(async () => [...SAMPLE_NTS]),
       listRuns: vi.fn(async () => [
         { ...baseRun, runId: 'run-draft', status: 'DRAFT' as const },
         { ...baseRun, runId: 'run-tested', status: 'TESTED' as const },
@@ -250,18 +247,18 @@ describe('DashboardNts (CUJ 1)', () => {
     render(
       <DashboardNts
         api={api}
-        byokConfig={{ provider: 'gemini', modelId: 'gemini-2.5-pro', operatorName: 'Op', secretKeyRef: 'ntc:llm:gemini' }}
-        onDraftReady={onDraftReady}
-        onOpenRunDiff={onOpenRunDiff}
+        byokConfig={{ provider: 'gemini', modelId: 'gemini-3.1-pro-preview', operatorName: 'Op', secretKeyRef: 'ntc:llm:gemini' }}
+        onDraftReady={() => undefined}
       />,
     );
 
-    const openButtons = await screen.findAllByRole('button', { name: /Abrir/i });
-    await user.click(openButtons[0]!);
-    expect(onDraftReady).toHaveBeenCalledWith('run-draft', '');
-
-    await user.click(openButtons[1]!);
-    expect(onOpenRunDiff).toHaveBeenCalledWith('run-tested');
+    expect(
+      await screen.findByRole('img', { name: /DFe — Documento Fiscal Eletrônico/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Execuções Recentes/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Abrir$/i })).not.toBeInTheDocument();
+    const nfeCard = screen.getByRole('button', { name: /^NFe\b/i });
+    expect(nfeCard).toHaveTextContent('1 verificada');
   });
 
   it('UI-DN-05: shows "Verificada" and "Revisar NC" when an NC already exists for an NT and opens the latest NC without re-running checkCompliance', async () => {
