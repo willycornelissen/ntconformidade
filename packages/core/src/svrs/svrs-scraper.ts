@@ -22,11 +22,24 @@ const ALLOWED_SVRS_HOSTS = new Set(['dfe-portal.svrs.rs.gov.br']);
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_HTML_BYTES = 10 * 1024 * 1024;
 const MAX_REDIRECT_CAP = 5;
+const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [500, 1500];
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 
 export interface SvrsSyncOptions {
   readonly baseOrigin?: string;
   readonly fetchFn?: typeof fetch;
   readonly maxRedirects?: number;
+  readonly retryDelaysMs?: readonly number[];
+}
+
+class SvrsFetchError extends Error {
+  readonly retryableForCacheFallback: boolean;
+
+  constructor(message: string, retryableForCacheFallback: boolean, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'SvrsFetchError';
+    this.retryableForCacheFallback = retryableForCacheFallback;
+  }
 }
 
 export function assertSafeSvrsUrl(rawUrl: string): URL {
@@ -393,35 +406,89 @@ function compareNtVersionsDesc(a: NtCatalogEntry, b: NtCatalogEntry): number {
   return b.ntVersion.localeCompare(a.ntVersion, undefined, { numeric: true });
 }
 
+function delayMs(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildSvrsHttpErrorMessage(status: number, currentUrl: string): string {
+  if (status === 502 || status === 503 || status === 504) {
+    return `Falha HTTP ${status} (serviço SVRS temporariamente indisponível) ao consultar ${currentUrl}. Tente novamente mais tarde ou utilize a Importação Manual Offline (PDF + XSD).`;
+  }
+  return `Falha HTTP ${status} ao consultar ${currentUrl}`;
+}
+
+async function fetchSingleAttemptWithRedirects(
+  safeStartUrl: string,
+  fetchFn: typeof fetch,
+  maxBytes: number,
+  maxRedirects: number,
+): Promise<{ readonly kind: 'ok'; readonly buffer: Buffer } | { readonly kind: 'retry'; readonly error: SvrsFetchError }> {
+  let currentUrl = safeStartUrl;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    let response: Response;
+    try {
+      response = await fetchFn(currentUrl, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        kind: 'retry',
+        error: new SvrsFetchError(`Falha de rede ao consultar ${currentUrl}: ${msg}`, true, { cause: err }),
+      };
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      await response.body?.cancel().catch(() => undefined);
+      if (!location || hop === maxRedirects) {
+        throw new SvrsFetchError(`Redirect HTTP bloqueado ou limite excedido em ${currentUrl}`, false);
+      }
+      currentUrl = assertSafeSvrsUrl(new URL(location, currentUrl).toString()).toString();
+      continue;
+    }
+
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      const isRetryable = RETRYABLE_HTTP_STATUSES.has(response.status);
+      const isServerUnavailable = response.status >= 500 || response.status === 429;
+      const err = new SvrsFetchError(buildSvrsHttpErrorMessage(response.status, currentUrl), isServerUnavailable);
+      if (isRetryable) {
+        return { kind: 'retry', error: err };
+      }
+      throw err;
+    }
+
+    return { kind: 'ok', buffer: await readBoundedResponse(response, maxBytes) };
+  }
+  throw new SvrsFetchError('Limite de redirects excedido', false);
+}
+
 async function fetchWithSafeRedirects(
   rawUrl: string,
   fetchFn: typeof fetch,
   maxBytes: number,
   requestedRedirects = 3,
+  retryDelaysMs: readonly number[] = DEFAULT_RETRY_DELAYS_MS,
 ): Promise<Buffer> {
   const maxRedirects = Math.min(Math.max(0, requestedRedirects), MAX_REDIRECT_CAP);
-  let currentUrl = assertSafeSvrsUrl(rawUrl).toString();
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    const response = await fetchFn(currentUrl, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      await response.body?.cancel().catch(() => undefined);
-      if (!location || hop === maxRedirects) {
-        throw new Error(`Redirect HTTP bloqueado ou limite excedido em ${currentUrl}`);
-      }
-      currentUrl = assertSafeSvrsUrl(new URL(location, currentUrl).toString()).toString();
-      continue;
+  const safeStartUrl = assertSafeSvrsUrl(rawUrl).toString();
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    const result = await fetchSingleAttemptWithRedirects(safeStartUrl, fetchFn, maxBytes, maxRedirects);
+    if (result.kind === 'ok') {
+      return result.buffer;
     }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new Error(`Falha HTTP ${response.status} ao consultar ${currentUrl}`);
+    const waitMs = retryDelaysMs[attempt];
+    if (waitMs === undefined) {
+      throw result.error;
     }
-    return readBoundedResponse(response, maxBytes);
+    await delayMs(waitMs);
   }
-  throw new Error('Limite de redirects excedido');
+  throw new SvrsFetchError(`Falha ao consultar ${safeStartUrl}`, true);
 }
 
 async function readBoundedResponse(response: Response, maxBytes: number): Promise<Buffer> {
@@ -467,7 +534,13 @@ export async function syncDfeFromSvrs(
     const origin = options.baseOrigin ?? SVRS_DEFAULT_ORIGIN;
     const pageUrl = assertSafeSvrsUrl(new URL(repo.svrsRelativePath, origin).toString()).toString();
     const fetchFn = options.fetchFn ?? fetch;
-    const htmlBuf = await fetchWithSafeRedirects(pageUrl, fetchFn, MAX_HTML_BYTES, options.maxRedirects);
+    const htmlBuf = await fetchWithSafeRedirects(
+      pageUrl,
+      fetchFn,
+      MAX_HTML_BYTES,
+      options.maxRedirects,
+      options.retryDelaysMs,
+    );
     const entries = parseSvrsHtmlTable(htmlBuf.toString('utf8'), repo.dfe, pageUrl);
     return {
       dfe: repo.dfe,
@@ -492,6 +565,68 @@ export async function syncAllSvrsNts(
   return Promise.all(repos.map((repo) => syncDfeFromSvrs(repo, options)));
 }
 
+async function tryLoadCachedPdf(
+  ntCacheDir: string,
+  expectedSha256: string | null,
+): Promise<{ readonly pdfPath: string; readonly pdfSha256: string } | null> {
+  const cachedPdfPath = path.join(ntCacheDir, 'nt.pdf');
+  try {
+    const stat = await fsp.lstat(cachedPdfPath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_DOWNLOAD_BYTES) {
+      return null;
+    }
+    const buf = await fsp.readFile(cachedPdfPath);
+    if (!hasPdfMagicHeader(buf)) {
+      return null;
+    }
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    if (expectedSha256 && expectedSha256 !== sha256) {
+      return null;
+    }
+    return { pdfPath: cachedPdfPath, pdfSha256: sha256 };
+  } catch {
+    return null;
+  }
+}
+
+async function containsValidXsdTree(dir: string): Promise<boolean> {
+  const dirStat = await fsp.lstat(dir);
+  if (!dirStat.isDirectory()) {
+    return false;
+  }
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  let foundXsd = false;
+  for (const item of entries) {
+    if (item.isSymbolicLink()) {
+      return false;
+    }
+    const fullPath = path.join(dir, item.name);
+    if (item.isDirectory()) {
+      if (await containsValidXsdTree(fullPath)) {
+        foundXsd = true;
+      }
+      continue;
+    }
+    if (item.isFile() && item.name.toLowerCase().endsWith('.xsd')) {
+      foundXsd = true;
+    }
+  }
+  return foundXsd;
+}
+
+async function findValidCachedXsdDir(ntCacheDir: string): Promise<string | null> {
+  const cachedXsdDir = path.join(ntCacheDir, 'xsd');
+  try {
+    return (await containsValidXsdTree(cachedXsdDir)) ? cachedXsdDir : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCacheFallbackEligibleError(err: unknown): boolean {
+  return err instanceof SvrsFetchError && err.retryableForCacheFallback;
+}
+
 export async function downloadNtArtifacts(
   entry: NtCatalogEntry,
   cacheRootDir: string,
@@ -511,32 +646,84 @@ export async function downloadNtArtifacts(
   let pdfPath: string | null = null;
   let pdfSha256: string | null = null;
   let xsdDir: string | null = null;
+  let reusedCachedPdf = false;
+  let reusedCachedXsd = false;
+  let downloadedAnyFresh = false;
   try {
     if (entry.pdfUrl) {
-      const pdfBuf = await fetchWithSafeRedirects(entry.pdfUrl, fetchFn, MAX_DOWNLOAD_BYTES, options.maxRedirects);
-      if (!hasPdfMagicHeader(pdfBuf)) {
-        throw new Error('Arquivo PDF baixado do SVRS não possui assinatura %PDF-');
+      try {
+        const pdfBuf = await fetchWithSafeRedirects(
+          entry.pdfUrl,
+          fetchFn,
+          MAX_DOWNLOAD_BYTES,
+          options.maxRedirects,
+          options.retryDelaysMs,
+        );
+        if (!hasPdfMagicHeader(pdfBuf)) {
+          throw new Error('Arquivo PDF baixado do SVRS não possui assinatura %PDF-');
+        }
+        pdfSha256 = crypto.createHash('sha256').update(pdfBuf).digest('hex');
+        if (entry.pdfSha256 && entry.pdfSha256 !== pdfSha256) {
+          throw new Error('SHA-256 do PDF baixado diverge do valor esperado no catálogo');
+        }
+        await fsp.writeFile(path.join(stagingDir, 'nt.pdf'), pdfBuf);
+        pdfPath = path.join(ntCacheDir, 'nt.pdf');
+        downloadedAnyFresh = true;
+      } catch (err) {
+        const cached = isCacheFallbackEligibleError(err)
+          ? await tryLoadCachedPdf(ntCacheDir, entry.pdfSha256)
+          : null;
+        if (!cached) {
+          throw err;
+        }
+        pdfPath = cached.pdfPath;
+        pdfSha256 = cached.pdfSha256;
+        reusedCachedPdf = true;
       }
-      pdfSha256 = crypto.createHash('sha256').update(pdfBuf).digest('hex');
-      if (entry.pdfSha256 && entry.pdfSha256 !== pdfSha256) {
-        throw new Error('SHA-256 do PDF baixado diverge do valor esperado no catálogo');
-      }
-      await fsp.writeFile(path.join(stagingDir, 'nt.pdf'), pdfBuf);
-      pdfPath = path.join(ntCacheDir, 'nt.pdf');
     }
     if (entry.xsdUrl) {
-      const xsdBuf = await fetchWithSafeRedirects(entry.xsdUrl, fetchFn, MAX_DOWNLOAD_BYTES, options.maxRedirects);
-      const ext = entry.xsdUrl.toLowerCase().includes('.xsd') && !entry.xsdUrl.toLowerCase().includes('.zip')
-        ? 'schema.xsd'
-        : 'schemas.zip';
-      const stagedBundle = path.join(stagingDir, ext);
-      await fsp.writeFile(stagedBundle, xsdBuf);
-      await extractSafeXsdBundle(stagedBundle, path.join(stagingDir, 'xsd'));
-      await fsp.rm(stagedBundle, { force: true });
-      xsdDir = path.join(ntCacheDir, 'xsd');
+      try {
+        const xsdBuf = await fetchWithSafeRedirects(
+          entry.xsdUrl,
+          fetchFn,
+          MAX_DOWNLOAD_BYTES,
+          options.maxRedirects,
+          options.retryDelaysMs,
+        );
+        const ext = entry.xsdUrl.toLowerCase().includes('.xsd') && !entry.xsdUrl.toLowerCase().includes('.zip')
+          ? 'schema.xsd'
+          : 'schemas.zip';
+        const stagedBundle = path.join(stagingDir, ext);
+        await fsp.writeFile(stagedBundle, xsdBuf);
+        await extractSafeXsdBundle(stagedBundle, path.join(stagingDir, 'xsd'));
+        await fsp.rm(stagedBundle, { force: true });
+        xsdDir = path.join(ntCacheDir, 'xsd');
+        downloadedAnyFresh = true;
+      } catch (err) {
+        const cachedXsd = isCacheFallbackEligibleError(err)
+          ? await findValidCachedXsdDir(ntCacheDir)
+          : null;
+        if (!cachedXsd) {
+          throw err;
+        }
+        xsdDir = cachedXsd;
+        reusedCachedXsd = true;
+      }
     }
-    await fsp.rm(ntCacheDir, { recursive: true, force: true });
-    await fsp.rename(stagingDir, ntCacheDir);
+
+    if (!downloadedAnyFresh) {
+      await fsp.rm(stagingDir, { recursive: true, force: true });
+    } else {
+      if (reusedCachedPdf && pdfPath) {
+        await fsp.copyFile(pdfPath, path.join(stagingDir, 'nt.pdf'));
+      }
+      if (reusedCachedXsd && xsdDir) {
+        await fsp.cp(xsdDir, path.join(stagingDir, 'xsd'), { recursive: true });
+      }
+      await fsp.rm(ntCacheDir, { recursive: true, force: true });
+      await fsp.rename(stagingDir, ntCacheDir);
+    }
+
     if (pdfPath && !fs.existsSync(pdfPath)) {
       throw new Error('Falha interna ao persistir PDF baixado');
     }

@@ -34,6 +34,28 @@ function sourceStatusBadgeClass(status: NtCatalogEntry['sourceStatus']): string 
   return 'badge badge-ok';
 }
 
+function formatSourceStatusLabel(status: NtCatalogEntry['sourceStatus']): string {
+  return status === 'DISCOVERED' ? 'Publicada' : status;
+}
+
+function findLatestNcRunByNt(runs: readonly ComplianceRun[]): ReadonlyMap<string, ComplianceRun> {
+  const byNt = new Map<string, ComplianceRun>();
+  for (const run of runs) {
+    if (!run.ncJsonPath) {
+      continue;
+    }
+    const existing = byNt.get(run.ntId);
+    const isNewer =
+      !existing ||
+      run.createdAt.localeCompare(existing.createdAt) > 0 ||
+      (run.createdAt === existing.createdAt && run.updatedAt.localeCompare(existing.updatedAt) > 0);
+    if (isNewer) {
+      byNt.set(run.ntId, run);
+    }
+  }
+  return byNt;
+}
+
 function formatBrDate(rawDate: string): string {
   const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(rawDate.trim());
   if (isoMatch?.[1] && isoMatch[2] && isoMatch[3]) {
@@ -218,13 +240,17 @@ function DfeDocumentCardsGrid({
 function NtCatalogTable({
   dfe,
   entries,
+  ncRunByNtId,
   busy,
   onCheckCompliance,
+  onReviewNc,
 }: {
   readonly dfe: DfeCode;
   readonly entries: readonly NtCatalogEntry[];
+  readonly ncRunByNtId: ReadonlyMap<string, ComplianceRun>;
   readonly busy: boolean;
   readonly onCheckCompliance: (entry: NtCatalogEntry) => void;
+  readonly onReviewNc: (entry: NtCatalogEntry, run: ComplianceRun) => void;
 }) {
   return (
     <table className="data-table">
@@ -234,7 +260,7 @@ function NtCatalogTable({
           <th scope="col">NT</th>
           <th scope="col">Versão</th>
           <th scope="col">Publicação</th>
-          <th scope="col">Status Fonte</th>
+          <th scope="col">Status</th>
           <th scope="col">Ações</th>
         </tr>
       </thead>
@@ -244,28 +270,46 @@ function NtCatalogTable({
             <td colSpan={5}>Nenhuma Nota Técnica encontrada para {dfe}.</td>
           </tr>
         ) : (
-          entries.map((entry) => (
-            <tr key={entry.id}>
-              <td>{entry.ntNumber}</td>
-              <td>{entry.ntVersion}</td>
-              <td>{formatBrDate(entry.publishedDate)}</td>
-              <td>
-                <span className={sourceStatusBadgeClass(entry.sourceStatus)}>
-                  {entry.sourceStatus}
-                </span>
-              </td>
-              <td>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy}
-                  onClick={() => onCheckCompliance(entry)}
-                >
-                  Verificar conformidade
-                </button>
-              </td>
-            </tr>
-          ))
+          entries.map((entry) => {
+            const ncRun = ncRunByNtId.get(entry.id);
+            return (
+              <tr key={entry.id}>
+                <td>{entry.ntNumber}</td>
+                <td>{entry.ntVersion}</td>
+                <td>{formatBrDate(entry.publishedDate)}</td>
+                <td>
+                  {ncRun ? (
+                    <span className="badge badge-ok">Verificada</span>
+                  ) : (
+                    <span className={sourceStatusBadgeClass(entry.sourceStatus)}>
+                      {formatSourceStatusLabel(entry.sourceStatus)}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  {ncRun ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={busy}
+                      onClick={() => onReviewNc(entry, ncRun)}
+                    >
+                      Revisar NC
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={busy}
+                      onClick={() => onCheckCompliance(entry)}
+                    >
+                      Verificar conformidade
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })
         )}
       </tbody>
     </table>
@@ -390,6 +434,8 @@ export function DashboardNts({
     () => groupEntriesByDfe(entries, syncResults),
     [entries, syncResults],
   );
+
+  const ncRunByNtId = useMemo(() => findLatestNcRunByNt(runs), [runs]);
 
   const visibleGroups = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -612,9 +658,13 @@ export function DashboardNts({
         <NtCatalogTable
           dfe={selectedDfe}
           entries={selectedDfeEntries}
+          ncRunByNtId={ncRunByNtId}
           busy={busy}
           onCheckCompliance={(entry) => {
             void handleCheckCompliance(entry);
+          }}
+          onReviewNc={(entry, run) => {
+            onDraftReady(run.runId, manualXsdMap[entry.id] || '');
           }}
         />
       ) : (

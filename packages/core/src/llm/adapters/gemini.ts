@@ -5,9 +5,14 @@ import type {
   LlmCompletionResponse,
   LlmProviderAdapter,
 } from '../../ports/interfaces.js';
-import { postJsonWithManualRedirects, type FetchFn } from '../http-client.js';
+import {
+  HttpStatusError,
+  postJsonWithManualRedirects,
+  type FetchFn,
+} from '../http-client.js';
 
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const DEFAULT_GEMINI_FALLBACK_MODEL_ID = 'gemini-3.1-pro-preview';
 
 const GeminiApiResponseSchema = z.object({
   candidates: z
@@ -30,10 +35,23 @@ const GeminiApiResponseSchema = z.object({
     .optional(),
 });
 
+function normalizeGeminiModelId(modelId: string): string {
+  return modelId.trim().replace(/^models\//, '');
+}
+
 function buildGeminiEndpointUrl(baseUrl: string | undefined, modelId: string): string {
   const base = (baseUrl ?? DEFAULT_GEMINI_BASE_URL).replace(/\/+$/, '');
-  const normalizedModel = encodeURIComponent(modelId.replace(/^models\//, ''));
+  const normalizedModel = encodeURIComponent(normalizeGeminiModelId(modelId));
   return `${base}/models/${normalizedModel}:generateContent`;
+}
+
+function shouldFallbackFromDeprecatedModel(error: unknown, requestedModel: string): boolean {
+  return (
+    error instanceof HttpStatusError &&
+    error.status === 404 &&
+    requestedModel !== DEFAULT_GEMINI_FALLBACK_MODEL_ID &&
+    /no longer available/i.test(error.message)
+  );
 }
 
 function buildGeminiRequestBody(request: LlmCompletionRequest): Record<string, unknown> {
@@ -67,14 +85,22 @@ export class GeminiAdapter implements LlmProviderAdapter {
       throw new Error(`GeminiAdapter recebeu provider incompatível: ${request.config.provider}`);
     }
 
-    const rawJson = await postJsonWithManualRedirects({
-      url: buildGeminiEndpointUrl(request.config.baseUrl, request.config.modelId),
-      headers: { 'x-goog-api-key': apiSecret },
-      body: buildGeminiRequestBody(request),
-      allowLoopbackHttp: false,
-      secretToRedact: apiSecret,
-      fetchFn: this.fetchFn,
-    });
+    const requestedModel = normalizeGeminiModelId(request.config.modelId);
+    const baseUrl = request.config.baseUrl;
+    let rawJson: unknown;
+    try {
+      rawJson = await this.invokeGenerateContent(request, apiSecret, baseUrl, requestedModel);
+    } catch (error) {
+      if (!shouldFallbackFromDeprecatedModel(error, requestedModel)) {
+        throw error;
+      }
+      rawJson = await this.invokeGenerateContent(
+        request,
+        apiSecret,
+        baseUrl,
+        DEFAULT_GEMINI_FALLBACK_MODEL_ID,
+      );
+    }
 
     const parsed = GeminiApiResponseSchema.parse(rawJson);
     const rawText = parsed.candidates?.[0]?.content?.parts
@@ -99,5 +125,21 @@ export class GeminiAdapter implements LlmProviderAdapter {
         stage: 'llm-call',
       }),
     };
+  }
+
+  private async invokeGenerateContent(
+    request: LlmCompletionRequest,
+    apiSecret: string,
+    baseUrl: string | undefined,
+    modelId: string,
+  ): Promise<unknown> {
+    return postJsonWithManualRedirects({
+      url: buildGeminiEndpointUrl(baseUrl, modelId),
+      headers: { 'x-goog-api-key': apiSecret },
+      body: buildGeminiRequestBody(request),
+      allowLoopbackHttp: false,
+      secretToRedact: apiSecret,
+      fetchFn: this.fetchFn,
+    });
   }
 }

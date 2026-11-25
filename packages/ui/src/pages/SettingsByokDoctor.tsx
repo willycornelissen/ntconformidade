@@ -8,6 +8,7 @@ import type {
 } from '@ntc/core';
 import {
   ALL_SECRET_KEYS,
+  DEFAULT_GEMINI_MODEL_ID,
   isByokProvider,
   isCopilotAuthMode,
   isSafeEndpointInput,
@@ -27,7 +28,7 @@ function buildSwitchedConfig(
   provider: ByokConfig['provider'],
 ): ByokConfig {
   const common = {
-    modelId: provider === 'gemini' ? 'gemini-2.5-pro' : 'gpt-4o',
+    modelId: provider === 'gemini' ? DEFAULT_GEMINI_MODEL_ID : 'gpt-4o',
     operatorName: prev.operatorName,
     ...(prev.maxTokensPerStage !== undefined ? { maxTokensPerStage: prev.maxTokensPerStage } : {}),
     ...(prev.temperature !== undefined ? { temperature: prev.temperature } : {}),

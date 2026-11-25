@@ -1,5 +1,7 @@
 import type { ByokConfig, DfeCode, NcItemDecision, SecretKeyTarget } from '@ntc/core';
 
+export const DEFAULT_GEMINI_MODEL_ID = 'gemini-3.1-pro-preview';
+
 export const ALL_DFES: readonly DfeCode[] = [
   'NFe',
   'BPe',

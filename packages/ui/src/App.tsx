@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ApplyNcOutcome, ByokConfig, NtcDesktopApi, RunProgressEvent } from '@ntc/core';
-import { toErrorMessage } from './api/helpers.js';
+import { DEFAULT_GEMINI_MODEL_ID, toErrorMessage } from './api/helpers.js';
 import { resolveDesktopApi } from './api/ipc-client.js';
 import { Layout, type NavTabId } from './components/Layout.js';
 import { DashboardNts } from './pages/DashboardNts.js';
@@ -11,7 +11,7 @@ import { SettingsByokDoctor } from './pages/SettingsByokDoctor.js';
 
 export const DEFAULT_BYOK_CONFIG: ByokConfig = {
   provider: 'gemini',
-  modelId: 'gemini-2.5-pro',
+  modelId: DEFAULT_GEMINI_MODEL_ID,
   operatorName: 'Operador',
   secretKeyRef: 'ntc:llm:gemini',
 };

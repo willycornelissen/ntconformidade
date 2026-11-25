@@ -845,4 +845,77 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
       }),
     ).rejects.toThrow(/diverge da NT analisada/i);
   });
+
+  it('LG-12: GeminiAdapter retries with gemini-3.1-pro-preview when deprecated model returns 404 no longer available', async () => {
+    const seenUrls: string[] = [];
+    const adapter = new GeminiAdapter({
+      fetchFn: async (url) => {
+        seenUrls.push(url);
+        if (url.includes('/models/gemini-2.5-pro:')) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: 404,
+                message:
+                  'This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview for the latest features and improvements.',
+                status: 'NOT_FOUND',
+              },
+            }),
+            { status: 404, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: JSON.stringify(SAMPLE_NC) }] } }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10, totalTokenCount: 20 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      },
+    });
+
+    const res = await adapter.completeStructured(
+      {
+        config: {
+          provider: 'gemini',
+          modelId: 'gemini-2.5-pro',
+          operatorName: 'Op',
+          secretKeyRef: 'ntc:llm:gemini',
+        },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+      },
+      'AIza-secret',
+    );
+    expect(seenUrls).toEqual([
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent',
+    ]);
+    expect(JSON.parse(res.rawText).nc_id).toBe(SAMPLE_NC.nc_id);
+
+    const unknownModelAdapter = new GeminiAdapter({
+      fetchFn: async () =>
+        new Response(
+          JSON.stringify({
+            error: { code: 404, message: 'Model models/gemini-does-not-exist is not found', status: 'NOT_FOUND' },
+          }),
+          { status: 404, headers: { 'content-type': 'application/json' } },
+        ),
+    });
+    await expect(
+      unknownModelAdapter.completeStructured(
+        {
+          config: {
+            provider: 'gemini',
+            modelId: 'gemini-does-not-exist',
+            operatorName: 'Op',
+            secretKeyRef: 'ntc:llm:gemini',
+          },
+          systemPrompt: 'sys',
+          userPrompt: 'usr',
+        },
+        'AIza-secret',
+      ),
+    ).rejects.toThrow(/Erro HTTP 404/i);
+  });
 });

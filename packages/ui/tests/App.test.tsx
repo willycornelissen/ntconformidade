@@ -358,4 +358,78 @@ describe('App Shell & Typed IPC Client', () => {
       }),
     );
   });
+
+  it('UI-06: clicking "Revisar NC" on an already-verified NT opens NcReview directly without calling checkCompliance', async () => {
+    const user = userEvent.setup();
+    const checkCompliance = vi.fn();
+    const existingRun = {
+      runId: 'run-existing-nc-1',
+      dfe: 'NFe' as const,
+      ntId: 'NFe:2025.002:1.30',
+      status: 'DRAFT' as const,
+      failedStep: null,
+      errorMessage: null,
+      operatorName: 'Op',
+      provider: 'gemini' as const,
+      modelId: 'gemini-2.5-pro',
+      baseCommitSha: '1'.repeat(40),
+      branchName: null,
+      ncJsonPath: 'NFe/NC-2025.002-v1.30.json',
+      prUrl: null,
+      tokenUsage: null,
+      createdAt: '2026-11-19T12:00:00.000Z',
+      updatedAt: '2026-11-19T12:00:00.000Z',
+    };
+    const existingNc = {
+      nc_id: 'NC-2025.002-v1.30',
+      nt_ref: {
+        dfe: 'NFe' as const,
+        nt_number: '2025.002',
+        nt_version: '1.30',
+        published_date: '2025-10-15',
+        pdf_sha256: 'a'.repeat(64),
+      },
+      base_commit_sha: '1'.repeat(40),
+      no_structural_gaps: false,
+      items: [],
+      created_at: '2026-11-19T12:00:00.000Z',
+      updated_at: '2026-11-19T12:00:00.000Z',
+    };
+
+    const api = makeMockApi({
+      listNts: vi.fn(async () => [
+        {
+          id: 'NFe:2025.002:1.30',
+          dfe: 'NFe' as const,
+          ntNumber: '2025.002',
+          ntVersion: '1.30',
+          publishedDate: '2025-10-15',
+          homologDate: null,
+          prodDate: null,
+          pdfUrl: 'https://dfe-portal.svrs.rs.gov.br/Nfe/NT.pdf',
+          xsdUrl: 'https://dfe-portal.svrs.rs.gov.br/Nfe/XSD.zip',
+          pdfSha256: 'a'.repeat(64),
+          sourceStatus: 'DOWNLOADED' as const,
+          fetchedAt: '2026-11-19T12:00:00.000Z',
+        },
+      ]),
+      listRuns: vi.fn(async () => [existingRun]),
+      getNc: vi.fn(async () => ({
+        run: existingRun,
+        nc: existingNc,
+        markdown: '# NC-2025.002-v1.30',
+      })),
+      checkCompliance,
+    });
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole('button', { name: /^NFe\b/i }));
+    expect(screen.getByText('Verificada')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Revisar NC$/i }));
+
+    expect(
+      await screen.findByRole('heading', { name: /Revisão de NC — NC-2025\.002-v1\.30/i }),
+    ).toBeInTheDocument();
+    expect(checkCompliance).not.toHaveBeenCalled();
+  });
 });

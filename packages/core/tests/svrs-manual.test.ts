@@ -797,4 +797,92 @@ describe('Ciclo 3 — Scraper SVRS e Importação Manual Segura', () => {
     expect(entries[0]?.xsdUrl).toContain('PL_010b_NT2025_002_v1.30.zip');
     expect(entries[1]?.xsdUrl).toContain('PL_010b_NT2025_002_v1.30.zip');
   });
+
+  it('SV-20 retenta HTTP 503 transitório e faz fallback para cache local válido em downloadNtArtifacts', async () => {
+    const { dir, repos } = await makeTempEnv();
+    const nfeRepo = repos.find((r) => r.dfe === 'NFe');
+    if (!nfeRepo) {
+      throw new Error('NFe ausente');
+    }
+
+    const okHtml = `<table><tbody><tr><td>NT 2026.008 v1.01</td><td>20/11/2026</td><td>-</td><td>-</td><td></td></tr></tbody></table>`;
+    let syncAttempts = 0;
+    const recoveringSyncFetch: typeof fetch = async () => {
+      syncAttempts++;
+      if (syncAttempts < 3) {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response(okHtml, { status: 200 });
+    };
+
+    const recoveredSync = await syncDfeFromSvrs(nfeRepo, {
+      fetchFn: recoveringSyncFetch,
+      retryDelaysMs: [0, 0],
+    });
+    expect(syncAttempts).toBe(3);
+    expect(recoveredSync.error).toBeNull();
+    expect(recoveredSync.entries).toHaveLength(1);
+
+    const cacheRoot = path.join(dir, 'cache-fallback');
+    const pdfBytes = Buffer.from('%PDF-1.4\n%%EOF\n', 'utf8');
+    const xsdZipBytes = buildSyntheticZip([
+      { name: 'nfe008.xsd', content: '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"/>' },
+    ]);
+    const entry = {
+      id: 'NFe:2026.008:v1.01',
+      dfe: 'NFe' as const,
+      ntNumber: '2026.008',
+      ntVersion: 'v1.01',
+      publishedDate: '2026-11-20',
+      homologDate: null,
+      prodDate: null,
+      pdfUrl: 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=3&nomeArquivo=NT_2026.008_v1.01_RTC_ValorLiquido.pdf',
+      xsdUrl: 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=2&nomeArquivo=PL_010b.zip',
+      pdfSha256: null,
+      sourceStatus: 'DISCOVERED' as const,
+      fetchedAt: '2026-11-25T12:00:00.000Z',
+    };
+
+    // Sem cache e com 503 persistente: falha com mensagem acionável
+    await expect(
+      downloadNtArtifacts(entry, cacheRoot, {
+        fetchFn: async () => new Response('Service Unavailable', { status: 503 }),
+        retryDelaysMs: [0, 0],
+      }),
+    ).rejects.toThrow(/503.*Importação Manual Offline/i);
+
+    // Popula cache após primeira coleta bem-sucedida
+    const initial = await downloadNtArtifacts(entry, cacheRoot, {
+      fetchFn: async (input) =>
+        String(input).includes('tipoArquivo=2')
+          ? new Response(new Uint8Array(xsdZipBytes), { status: 200 })
+          : new Response(new Uint8Array(pdfBytes), { status: 200 }),
+      retryDelaysMs: [0, 0],
+    });
+    expect(initial.pdfPath).toBeTruthy();
+    expect(initial.xsdDir).toBeTruthy();
+
+    // Com 503 persistente depois de já existir cache válido: reutiliza cache local
+    const fallback = await downloadNtArtifacts(entry, cacheRoot, {
+      fetchFn: async () => new Response('Service Unavailable', { status: 503 }),
+      retryDelaysMs: [0, 0],
+    });
+    expect(fallback.pdfPath).toBe(initial.pdfPath);
+    expect(fallback.pdfSha256).toBe(initial.pdfSha256);
+    expect(fallback.xsdDir).toBe(initial.xsdDir);
+
+    // Cache corrompido (symlink em nt.pdf) NÃO é aceito como fallback
+    if (initial.pdfPath) {
+      const outsidePdf = path.join(dir, 'outside.pdf');
+      await fs.writeFile(outsidePdf, '%PDF-1.4\n%%EOF\n', 'utf8');
+      await fs.rm(initial.pdfPath, { force: true });
+      await fs.symlink(outsidePdf, initial.pdfPath);
+      await expect(
+        downloadNtArtifacts(entry, cacheRoot, {
+          fetchFn: async () => new Response('Service Unavailable', { status: 503 }),
+          retryDelaysMs: [0],
+        }),
+      ).rejects.toThrow(/503/);
+    }
+  });
 });

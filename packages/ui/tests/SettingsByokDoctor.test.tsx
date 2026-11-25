@@ -104,6 +104,15 @@ describe('SettingsByokDoctor', () => {
       />,
     );
     expect(await screen.findByLabelText(/Modo Autenticação Copilot/i)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/Provedor LLM/i), 'gemini');
+    expect(onChangeConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: 'gemini',
+        modelId: 'gemini-3.1-pro-preview',
+        secretKeyRef: 'ntc:llm:gemini',
+      }),
+    );
   });
 
   it('UI-SD-03: saves BYOK config and completes GitHub Copilot OAuth Device login polling', async () => {

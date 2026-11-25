@@ -82,6 +82,8 @@ describe('DashboardNts (CUJ 1)', () => {
     await user.click(screen.getByRole('button', { name: /^NFe\b/i }));
 
     expect(await screen.findByRole('heading', { name: /Notas Técnicas — NFe/i })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /^Status$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: /Status Fonte/i })).not.toBeInTheDocument();
     expect(screen.getByText('2025.002')).toBeInTheDocument();
     expect(screen.getByText('2024.001')).toBeInTheDocument();
     expect(screen.getByText('15/10/2025')).toBeInTheDocument();
@@ -93,6 +95,8 @@ describe('DashboardNts (CUJ 1)', () => {
     const rows = screen.getAllByRole('row').slice(1);
     expect(rows[0]).toHaveTextContent('2025.002');
     expect(rows[1]).toHaveTextContent('2024.001');
+    expect(rows[1]).toHaveTextContent('Publicada');
+    expect(rows[1]).not.toHaveTextContent('DISCOVERED');
 
     await user.type(screen.getByLabelText(/Buscar NT/i), '2025.002');
     expect(screen.getByText('2025.002')).toBeInTheDocument();
@@ -258,5 +262,89 @@ describe('DashboardNts (CUJ 1)', () => {
 
     await user.click(openButtons[1]!);
     expect(onOpenRunDiff).toHaveBeenCalledWith('run-tested');
+  });
+
+  it('UI-DN-05: shows "Verificada" and "Revisar NC" when an NC already exists for an NT and opens the latest NC without re-running checkCompliance', async () => {
+    const user = userEvent.setup();
+    const onDraftReady = vi.fn();
+    const checkCompliance = vi.fn();
+    const baseRun = {
+      dfe: 'NFe' as const,
+      failedStep: null,
+      errorMessage: null,
+      operatorName: 'Op',
+      provider: 'gemini' as const,
+      modelId: 'gemini-2.5-pro',
+      baseCommitSha: '1'.repeat(40),
+      branchName: null,
+      prUrl: null,
+      tokenUsage: null,
+    };
+
+    const api = makeMockApi({
+      listNts: vi.fn(async () => [SAMPLE_NTS[0]!, SAMPLE_NTS[1]!]),
+      listRuns: vi.fn(async () => [
+        {
+          ...baseRun,
+          runId: 'run-old-nc',
+          ntId: 'NFe:2025.002:1.30',
+          status: 'PR_OPENED' as const,
+          ncJsonPath: 'NFe/NC-2025.002-v1.30.json',
+          prUrl: 'https://gitea.local/pr/1',
+          createdAt: '2026-11-18T10:00:00.000Z',
+          updatedAt: '2026-11-18T10:00:00.000Z',
+        },
+        {
+          ...baseRun,
+          runId: 'run-latest-nc',
+          ntId: 'NFe:2025.002:1.30',
+          status: 'FAILED' as const,
+          failedStep: 'MAVEN_TEST' as const,
+          errorMessage: 'Build error',
+          ncJsonPath: 'NFe/NC-2025.002-v1.30.json',
+          createdAt: '2026-11-19T12:00:00.000Z',
+          updatedAt: '2026-11-19T12:05:00.000Z',
+        },
+        {
+          ...baseRun,
+          runId: 'run-failed-no-nc',
+          ntId: 'NFe:2024.001:1.00',
+          status: 'FAILED' as const,
+          failedStep: 'PDF_EXTRACT' as const,
+          errorMessage: 'Corrupt PDF',
+          ncJsonPath: null,
+          createdAt: '2026-11-19T11:00:00.000Z',
+          updatedAt: '2026-11-19T11:00:00.000Z',
+        },
+      ]),
+      checkCompliance,
+    });
+
+    render(
+      <DashboardNts
+        api={api}
+        byokConfig={{ provider: 'gemini', modelId: 'gemini-2.5-pro', operatorName: 'Op', secretKeyRef: 'ntc:llm:gemini' }}
+        onDraftReady={onDraftReady}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /^NFe\b/i }));
+
+    const rows = screen.getAllByRole('row');
+    const row2025 = rows.find((r) => r.textContent?.includes('2025.002'));
+    const row2024 = rows.find((r) => r.textContent?.includes('2024.001'));
+    expect(row2025).toHaveTextContent('Verificada');
+    expect(row2025).not.toHaveTextContent('DOWNLOADED');
+    expect(row2024).toHaveTextContent('Publicada');
+    expect(row2024).not.toHaveTextContent('DISCOVERED');
+    expect(row2024).not.toHaveTextContent('Verificada');
+
+    const reviewButtons = screen.getAllByRole('button', { name: /^Revisar NC$/i });
+    expect(reviewButtons).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /Verificar conformidade/i })).toHaveLength(1);
+
+    await user.click(reviewButtons[0]!);
+    expect(onDraftReady).toHaveBeenCalledWith('run-latest-nc', '');
+    expect(checkCompliance).not.toHaveBeenCalled();
   });
 });
