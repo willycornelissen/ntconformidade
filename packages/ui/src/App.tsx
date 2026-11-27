@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ApplyNcOutcome, ByokConfig, NtcDesktopApi, RunProgressEvent } from '@ntc/core';
-import { DEFAULT_GEMINI_MODEL_ID, toErrorMessage } from './api/helpers.js';
+import { DEFAULT_COPILOT_MODEL_ID, normalizeCopilotByokConfig, toErrorMessage } from './api/helpers.js';
 import { resolveDesktopApi } from './api/ipc-client.js';
 import { Layout, type NavTabId } from './components/Layout.js';
 import { DashboardNts } from './pages/DashboardNts.js';
@@ -10,10 +10,11 @@ import { RepoRegistry } from './pages/RepoRegistry.js';
 import { SettingsByokDoctor } from './pages/SettingsByokDoctor.js';
 
 export const DEFAULT_BYOK_CONFIG: ByokConfig = {
-  provider: 'gemini',
-  modelId: DEFAULT_GEMINI_MODEL_ID,
+  provider: 'github-copilot',
+  modelId: DEFAULT_COPILOT_MODEL_ID,
   operatorName: 'Operador',
-  secretKeyRef: 'ntc:llm:gemini',
+  secretKeyRef: 'ntc:llm:github-copilot',
+  authMode: 'copilot-oauth-device',
 };
 
 export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
@@ -36,7 +37,7 @@ export function App({ api: injectedApi }: { readonly api?: NtcDesktopApi }) {
       .getByokConfig()
       .then((savedConfig) => {
         if (!cancelled && isMountedRef.current && savedConfig) {
-          setByokConfig(savedConfig);
+          setByokConfig(normalizeCopilotByokConfig(savedConfig));
         }
       })
       .catch(() => undefined);

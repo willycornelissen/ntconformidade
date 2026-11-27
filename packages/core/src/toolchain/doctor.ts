@@ -7,7 +7,12 @@ import {
   type DoctorReport,
 } from '../domain/types.js';
 import { isAllowedByokUrl, isSafeHttpsUrl } from '../domain/validators.js';
-import type { FetchFn } from '../llm/http-client.js';
+import { parseGiteaRepoUrl } from '../git/gitea-adapter.js';
+import {
+  exchangeCopilotSessionToken,
+  requiresCopilotSessionExchange,
+} from '../llm/copilot-oauth.js';
+import { HttpStatusError, scrubSecret, type FetchFn } from '../llm/http-client.js';
 import type { ExecFileAsyncFn } from '../oracle/xsd-ast-diff.js';
 import type { SecretStorePort } from '../ports/interfaces.js';
 import { sanitizeLogMessage } from '../privacy/dlp-filter.js';
@@ -232,9 +237,10 @@ async function probeEndpointIfConfigured(
 
 async function probeGiteaPat(
   fetchFn: FetchFn | undefined,
-  origin: string,
+  giteaUrl: string,
   pat: string,
 ): Promise<{ readonly status: 'OK' | 'WARN' | 'ERROR'; readonly summary: string; readonly details: string | null }> {
+  const origin = new URL(giteaUrl).origin;
   if (!fetchFn) {
     return { status: 'OK', summary: 'Gitea HTTPS válido e PAT configurado', details: null };
   }
@@ -254,9 +260,6 @@ async function probeGiteaPat(
       signal: AbortSignal.timeout(5_000),
     });
     await res.body?.cancel().catch(() => undefined);
-    if (res.ok) {
-      return { status: 'OK', summary: 'Gitea HTTPS válido e PAT autenticado', details: null };
-    }
     if (res.status === 401) {
       return {
         status: 'ERROR',
@@ -271,15 +274,57 @@ async function probeGiteaPat(
         details: 'Verifique se o PAT inclui escopos read:repository / write:repository e read:user.',
       };
     }
-    return {
-      status: 'WARN',
-      summary: `Gitea retornou HTTP ${res.status} ao validar PAT`,
-      details: `HTTP ${res.status}`,
-    };
+    if (!res.ok) {
+      return {
+        status: 'WARN',
+        summary: `Gitea retornou HTTP ${res.status} ao validar PAT`,
+        details: `HTTP ${res.status}`,
+      };
+    }
+
+    let parsedRepo: ReturnType<typeof parseGiteaRepoUrl> | null = null;
+    try {
+      parsedRepo = parseGiteaRepoUrl(giteaUrl);
+    } catch {
+      parsedRepo = null;
+    }
+    if (parsedRepo) {
+      const repoRes = await fetchFn(
+        `${origin}/api/v1/repos/${encodeURIComponent(parsedRepo.owner)}/${encodeURIComponent(parsedRepo.repoName)}`,
+        {
+          method: 'GET',
+          headers: { Authorization: `token ${pat}`, Accept: 'application/json' },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (repoRes.status === 403 || repoRes.status === 404) {
+        await repoRes.body?.cancel().catch(() => undefined);
+        return {
+          status: 'ERROR',
+          summary: `Sem acesso ao repositório '${parsedRepo.owner}/${parsedRepo.repoName}' (HTTP ${repoRes.status})`,
+          details: 'Confirme as permissões do usuário e escopos read:repository / write:repository do PAT.',
+        };
+      }
+      if (repoRes.ok) {
+        const repoBody = (await repoRes.json().catch(() => null)) as {
+          readonly permissions?: { readonly push?: boolean };
+        } | null;
+        if (repoBody?.permissions?.push === false) {
+          return {
+            status: 'ERROR',
+            summary: `PAT sem permissão de push em '${parsedRepo.owner}/${parsedRepo.repoName}'`,
+            details: 'É necessário acesso de escrita no repositório para abrir Pull Requests.',
+          };
+        }
+      } else {
+        await repoRes.body?.cancel().catch(() => undefined);
+      }
+    }
+
+    return { status: 'OK', summary: 'Gitea HTTPS válido e PAT autenticado', details: null };
   } catch (error) {
-    const msg = sanitizeLogMessage(error instanceof Error ? error.message : String(error))
-      .split(pat)
-      .join('[REDACTED]');
+    const msg = scrubSecret(error instanceof Error ? error.message : String(error), pat);
     return { status: 'WARN', summary: `Gitea inacessível (${msg})`, details: msg };
   }
 }
@@ -301,7 +346,7 @@ async function checkGiteaReadiness(
   }
   const rawPat = secretStore ? await secretStore.getSecret(GITEA_PAT_SECRET_KEY) : null;
   const pat = rawPat?.trim() ?? '';
-  const probe = await probeGiteaPat(fetchFn, new URL(giteaUrl).origin, pat);
+  const probe = await probeGiteaPat(fetchFn, giteaUrl, pat);
   return {
     id: 'GITEA_API',
     status: probe.status,
@@ -335,6 +380,40 @@ async function checkLlmReadiness(
     const probeErr = await probeEndpointIfConfigured(fetchFn, `${parsed.data.baseUrl.replace(/\/+$/, '')}/models`, {});
     if (probeErr) {
       return { id: 'LLM_ENDPOINT', status: 'WARN', summary: `Endpoint BYOK indisponível (${probeErr})`, details: probeErr };
+    }
+  }
+  if (fetchFn && parsed.data.provider === 'github-copilot') {
+    const rawSecret = secretStore ? await secretStore.getSecret(parsed.data.secretKeyRef) : null;
+    const secret = rawSecret?.trim() ?? '';
+    if (secret && requiresCopilotSessionExchange(secret)) {
+      try {
+        const session = await exchangeCopilotSessionToken(secret, fetchFn);
+        return {
+          id: 'LLM_ENDPOINT',
+          status: 'OK',
+          summary: `BYOK github-copilot (${parsed.data.modelId}) autenticado e pronto`,
+          details: `Assinatura Copilot ativa em ${session.apiOrigin}`,
+        };
+      } catch (error) {
+        const msg = scrubSecret(error instanceof Error ? error.message : String(error), secret);
+        if (error instanceof HttpStatusError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+          return {
+            id: 'LLM_ENDPOINT',
+            status: 'ERROR',
+            summary: `Falha na autenticação GitHub Copilot (HTTP ${error.status})`,
+            details:
+              error.status === 401
+                ? 'Token OAuth expirado ou revogado. Reconecte via OAuth Device.'
+                : 'Conta sem assinatura ativa do GitHub Copilot ou acesso negado.',
+          };
+        }
+        return {
+          id: 'LLM_ENDPOINT',
+          status: 'WARN',
+          summary: `GitHub Copilot inacessível (${msg})`,
+          details: msg,
+        };
+      }
     }
   }
   return { id: 'LLM_ENDPOINT', status: 'OK', summary: `BYOK ${parsed.data.provider} (${parsed.data.modelId}) pronto`, details: null };

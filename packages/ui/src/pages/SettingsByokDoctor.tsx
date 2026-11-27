@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ByokConfig,
+  ConnectionTestResult,
   CopilotAuthStartResponse,
+  CopilotModelOption,
+  DfeRepoEntry,
   DoctorReport,
   NtcDesktopApi,
-  SecretKeyTarget,
 } from '@ntc/core';
 import {
-  ALL_SECRET_KEYS,
-  DEFAULT_GEMINI_MODEL_ID,
-  isByokProvider,
-  isCopilotAuthMode,
+  COPILOT_BYOK_SECRET_KEYS,
+  CURATED_COPILOT_MODELS,
+  type CopilotByokConfig,
+  extractUrlOrigin,
   isSafeEndpointInput,
   isSafeHttpsUrlInput,
+  normalizeCopilotByokConfig,
+  rewriteRepoOrigin,
   toErrorMessage,
 } from '../api/helpers.js';
 
@@ -23,338 +27,410 @@ export interface SettingsByokDoctorProps {
   readonly onGoHome?: () => void;
 }
 
-function buildSwitchedConfig(
-  prev: ByokConfig,
-  provider: ByokConfig['provider'],
-): ByokConfig {
-  const common = {
-    modelId: provider === 'gemini' ? DEFAULT_GEMINI_MODEL_ID : 'gpt-4o',
-    operatorName: prev.operatorName,
-    ...(prev.maxTokensPerStage !== undefined ? { maxTokensPerStage: prev.maxTokensPerStage } : {}),
-    ...(prev.temperature !== undefined ? { temperature: prev.temperature } : {}),
-  };
-  if (provider === 'gemini') {
-    return { provider: 'gemini', secretKeyRef: 'ntc:llm:gemini', ...common };
+const DEFAULT_GITEA_BASE_URL = 'https://gitea.apps.ticio.fazenda.mg.gov.br';
+const DEFAULT_GITEA_TEST_URL = 'https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/nfe-parser';
+
+function ConnectionTestResultPanel({
+  result,
+  title,
+}: {
+  readonly result: ConnectionTestResult | null;
+  readonly title: string;
+}) {
+  if (!result) {
+    return null;
   }
-  if (provider === 'openai-compatible') {
-    return {
-      provider: 'openai-compatible',
-      secretKeyRef: 'ntc:llm:openai-compatible',
-      baseUrl: 'http://127.0.0.1:11434/v1',
-      ...common,
-    };
-  }
-  return {
-    provider: 'github-copilot',
-    secretKeyRef: 'ntc:llm:github-copilot',
-    authMode: 'github-models-pat',
-    ...common,
-  };
+  return (
+    <div
+      className={`alert ${result.ok ? 'alert-ok' : 'alert-danger'}`}
+      role="status"
+      style={{ marginTop: '0.75rem' }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <strong>
+          {title}: {result.summary}
+        </strong>
+        <span className={`badge ${result.ok ? 'badge-ok' : 'badge-danger'}`}>
+          {result.ok ? 'PASSOU' : 'FALHOU'} ({result.latencyMs} ms)
+        </span>
+      </div>
+      {result.details && <p style={{ margin: '0.35rem 0 0.5rem 0' }}>{result.details}</p>}
+      <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
+        {result.steps.map((step) => (
+          <li key={step.name}>
+            <strong>{step.name}:</strong> {step.ok ? 'OK' : 'FALHA'} — {step.message}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
-function ByokConfigSection({
-  byokConfig,
+function CopilotByokSection({
+  config,
+  isCopilotConnected,
+  modelOptions,
+  modelsSource,
+  modelsWarning,
+  copilotSession,
+  copilotTestResult,
   busy,
-  onProviderChange,
   onChangeConfig,
   onSaveConfig,
+  onRefreshModels,
+  onStartCopilotLogin,
+  onCancelCopilotLogin,
+  onCopyCopilotCode,
+  onTestCopilot,
 }: {
-  readonly byokConfig: ByokConfig;
+  readonly config: CopilotByokConfig;
+  readonly isCopilotConnected: boolean;
+  readonly modelOptions: readonly CopilotModelOption[];
+  readonly modelsSource: 'subscription' | 'curated';
+  readonly modelsWarning: string | null;
+  readonly copilotSession: CopilotAuthStartResponse | null;
+  readonly copilotTestResult: ConnectionTestResult | null;
   readonly busy: boolean;
-  readonly onProviderChange: (provider: ByokConfig['provider']) => void;
-  readonly onChangeConfig: (next: ByokConfig) => void;
+  readonly onChangeConfig: (next: CopilotByokConfig) => void;
   readonly onSaveConfig: () => void;
+  readonly onRefreshModels: () => void;
+  readonly onStartCopilotLogin: () => void;
+  readonly onCancelCopilotLogin: () => void;
+  readonly onCopyCopilotCode: (code: string) => void;
+  readonly onTestCopilot: () => void;
 }) {
+  const effectiveModelOptions = useMemo(() => {
+    if (modelOptions.some((m) => m.id === config.modelId)) {
+      return modelOptions;
+    }
+    return [
+      { id: config.modelId, name: config.modelId, source: 'curated' as const },
+      ...modelOptions,
+    ];
+  }, [config.modelId, modelOptions]);
+
   return (
     <div className="card" style={{ marginBottom: '1rem' }}>
-      <h3>Configuração BYOK</h3>
-      <div className="form-grid">
+      <div className="section-header">
+        <div>
+          <h3 style={{ margin: 0 }}>BYOK — Modelos da Assinatura GitHub Copilot</h3>
+          <p style={{ margin: '0.25rem 0 0 0', color: 'var(--muted)', fontSize: '0.9rem' }}>
+            As verificações de conformidade e correções de NT utilizam exclusivamente modelos da sua
+            assinatura GitHub Copilot via OAuth Device.
+          </p>
+        </div>
+        <span className={`badge ${isCopilotConnected ? 'badge-ok' : 'badge-warn'}`}>
+          Assinatura Copilot: {isCopilotConnected ? 'Conectada' : 'Não conectada'}
+        </span>
+      </div>
+
+      <div className="form-grid" style={{ marginTop: '0.75rem' }}>
         <div className="field">
           <label htmlFor="byok-provider">Provedor LLM</label>
-          <select
-            id="byok-provider"
-            disabled={busy}
-            value={byokConfig.provider}
-            onChange={(e) => {
-              if (isByokProvider(e.target.value)) {
-                onProviderChange(e.target.value);
-              }
-            }}
-          >
-            <option value="gemini">Google Gemini</option>
-            <option value="openai-compatible">OpenAI / Ollama Local</option>
-            <option value="github-copilot">GitHub Copilot / Models</option>
-          </select>
-        </div>
-        <div className="field">
-          <label htmlFor="byok-model">Modelo</label>
           <input
-            id="byok-model"
-            disabled={busy}
-            value={byokConfig.modelId}
-            onChange={(e) => onChangeConfig({ ...byokConfig, modelId: e.target.value })}
+            id="byok-provider"
+            readOnly
+            aria-readonly="true"
+            value="GitHub Copilot (Assinatura OAuth Device)"
           />
         </div>
+
+        <div className="field">
+          <label htmlFor="byok-model">
+            Modelo GitHub Copilot ({modelsSource === 'subscription' ? 'Assinatura ativa' : 'Catálogo base'})
+          </label>
+          <select
+            id="byok-model"
+            disabled={busy}
+            value={config.modelId}
+            onChange={(e) => onChangeConfig({ ...config, modelId: e.target.value })}
+          >
+            {effectiveModelOptions.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.vendor ? `${model.name} (${model.vendor}) — ${model.id}` : `${model.name} — ${model.id}`}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="field">
           <label htmlFor="byok-operator">Operador (Auditoria)</label>
           <input
             id="byok-operator"
             disabled={busy}
-            value={byokConfig.operatorName}
-            onChange={(e) => onChangeConfig({ ...byokConfig, operatorName: e.target.value })}
+            value={config.operatorName}
+            onChange={(e) => onChangeConfig({ ...config, operatorName: e.target.value })}
           />
         </div>
 
-        {byokConfig.provider === 'openai-compatible' && (
-          <>
-            <div className="field">
-              <label htmlFor="byok-base-url">Endpoint Base URL (OpenAI / Ollama)</label>
-              <input
-                id="byok-base-url"
-                disabled={busy}
-                value={byokConfig.baseUrl}
-                onChange={(e) => onChangeConfig({ ...byokConfig, baseUrl: e.target.value })}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="byok-org-id">Organization ID (opcional)</label>
-              <input
-                id="byok-org-id"
-                disabled={busy}
-                value={byokConfig.organizationId ?? ''}
-                onChange={(e) => {
-                  const trimmed = e.target.value.trim();
-                  const next = { ...byokConfig };
-                  if (trimmed) {
-                    next.organizationId = trimmed;
-                  } else {
-                    delete next.organizationId;
-                  }
-                  onChangeConfig(next);
-                }}
-              />
-            </div>
-          </>
-        )}
+        <div className="field">
+          <label htmlFor="byok-endpoint-url">Endpoint Copilot HTTPS (opcional)</label>
+          <input
+            id="byok-endpoint-url"
+            disabled={busy}
+            value={config.endpointUrl ?? ''}
+            placeholder="https://api.githubcopilot.com"
+            onChange={(e) => {
+              const trimmed = e.target.value.trim();
+              const next: CopilotByokConfig = { ...config };
+              if (trimmed) {
+                next.endpointUrl = trimmed;
+              } else {
+                delete next.endpointUrl;
+              }
+              onChangeConfig(next);
+            }}
+          />
+        </div>
 
-        {byokConfig.provider === 'github-copilot' && (
-          <>
-            <div className="field">
-              <label htmlFor="byok-auth-mode">Modo Autenticação Copilot</label>
-              <select
-                id="byok-auth-mode"
-                disabled={busy}
-                value={byokConfig.authMode}
-                onChange={(e) => {
-                  if (isCopilotAuthMode(e.target.value)) {
-                    onChangeConfig({ ...byokConfig, authMode: e.target.value });
-                  }
-                }}
-              >
-                <option value="github-models-pat">GitHub Models PAT</option>
-                <option value="copilot-oauth-device">Copilot OAuth Device</option>
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="byok-endpoint-url">Endpoint URL HTTPS (opcional)</label>
-              <input
-                id="byok-endpoint-url"
-                disabled={busy}
-                value={byokConfig.endpointUrl ?? ''}
-                onChange={(e) => {
-                  const trimmed = e.target.value.trim();
-                  const next = { ...byokConfig };
-                  if (trimmed) {
-                    next.endpointUrl = trimmed;
-                  } else {
-                    delete next.endpointUrl;
-                  }
-                  onChangeConfig(next);
-                }}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="byok-enterprise-slug">Enterprise Slug (opcional)</label>
-              <input
-                id="byok-enterprise-slug"
-                disabled={busy}
-                value={byokConfig.enterpriseSlug ?? ''}
-                onChange={(e) => {
-                  const trimmed = e.target.value.trim();
-                  const next = { ...byokConfig };
-                  if (trimmed) {
-                    next.enterpriseSlug = trimmed;
-                  } else {
-                    delete next.enterpriseSlug;
-                  }
-                  onChangeConfig(next);
-                }}
-              />
-            </div>
-          </>
-        )}
+        <div className="field">
+          <label htmlFor="byok-enterprise-slug">Enterprise Slug (opcional)</label>
+          <input
+            id="byok-enterprise-slug"
+            disabled={busy}
+            value={config.enterpriseSlug ?? ''}
+            onChange={(e) => {
+              const trimmed = e.target.value.trim();
+              const next: CopilotByokConfig = { ...config };
+              if (trimmed) {
+                next.enterpriseSlug = trimmed;
+              } else {
+                delete next.enterpriseSlug;
+              }
+              onChangeConfig(next);
+            }}
+          />
+        </div>
       </div>
-      <div className="toolbar" style={{ marginTop: '0.75rem' }}>
+
+      {modelsWarning && (
+        <p className="alert alert-warn" role="status" style={{ marginTop: '0.75rem' }}>
+          Não foi possível listar modelos da assinatura agora ({modelsWarning}). Exibindo catálogo base Copilot.
+        </p>
+      )}
+
+      <div className="toolbar" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
         <button type="button" className="btn btn-primary" disabled={busy} onClick={onSaveConfig}>
           Salvar Configuração BYOK
         </button>
+        <button type="button" className="btn" disabled={busy} onClick={onRefreshModels}>
+          Atualizar Modelos Copilot
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={onTestCopilot}>
+          Testar LLM GitHub Copilot
+        </button>
       </div>
+
+      <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
+        {!copilotSession ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={onStartCopilotLogin}
+          >
+            {isCopilotConnected
+              ? 'Reconectar GitHub Copilot (OAuth Device)'
+              : 'Conectar com GitHub Copilot (OAuth Device)'}
+          </button>
+        ) : (
+          <div className="alert alert-warn" role="status">
+            <p style={{ margin: '0 0 0.4rem 0' }}>
+              Abra <strong>{copilotSession.verificationUri}</strong> no navegador e informe o código:{' '}
+              <code>{copilotSession.userCode}</code>
+            </p>
+            <div className="toolbar" style={{ marginBottom: 0 }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onCopyCopilotCode(copilotSession.userCode)}
+              >
+                Copiar Código
+              </button>
+              <button type="button" className="btn" onClick={onCancelCopilotLogin}>
+                Cancelar Login
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <ConnectionTestResultPanel
+        result={copilotTestResult}
+        title="Teste de Funcionamento — GitHub Copilot"
+      />
     </div>
   );
 }
 
-function SecretVaultSection({
-  provider,
-  isCopilotOAuthMode,
-  secretStatus,
-  currentLlmSecretKey,
+function GiteaAccessSection({
+  giteaBaseUrl,
   giteaPatInput,
-  llmKeyInput,
-  copilotSession,
+  isGiteaPatConfigured,
+  syncRepoHosts,
+  repos,
+  selectedTestRepoDfe,
+  giteaTestUrl,
+  giteaTestResult,
   busy,
-  onChangeGiteaPat,
-  onChangeLlmKey,
-  onSaveSecret,
-  onStartCopilotLogin,
-  onCancelCopilotLogin,
-  onCopyCopilotCode,
+  onChangeGiteaBaseUrl,
+  onChangeGiteaPatInput,
+  onChangeSyncRepoHosts,
+  onSelectTestRepo,
+  onChangeGiteaTestUrl,
+  onSaveGiteaAccess,
+  onTestGitea,
 }: {
-  readonly provider: ByokConfig['provider'];
-  readonly isCopilotOAuthMode: boolean;
-  readonly secretStatus: Record<string, boolean>;
-  readonly currentLlmSecretKey: SecretKeyTarget;
+  readonly giteaBaseUrl: string;
   readonly giteaPatInput: string;
-  readonly llmKeyInput: string;
-  readonly copilotSession: CopilotAuthStartResponse | null;
+  readonly isGiteaPatConfigured: boolean;
+  readonly syncRepoHosts: boolean;
+  readonly repos: readonly DfeRepoEntry[];
+  readonly selectedTestRepoDfe: string;
+  readonly giteaTestUrl: string;
+  readonly giteaTestResult: ConnectionTestResult | null;
   readonly busy: boolean;
-  readonly onChangeGiteaPat: (v: string) => void;
-  readonly onChangeLlmKey: (v: string) => void;
-  readonly onSaveSecret: (key: SecretKeyTarget, value: string, clearFn: () => void) => void;
-  readonly onStartCopilotLogin: () => void;
-  readonly onCancelCopilotLogin: () => void;
-  readonly onCopyCopilotCode: (code: string) => void;
+  readonly onChangeGiteaBaseUrl: (value: string) => void;
+  readonly onChangeGiteaPatInput: (value: string) => void;
+  readonly onChangeSyncRepoHosts: (checked: boolean) => void;
+  readonly onSelectTestRepo: (dfe: string) => void;
+  readonly onChangeGiteaTestUrl: (value: string) => void;
+  readonly onSaveGiteaAccess: () => void;
+  readonly onTestGitea: () => void;
 }) {
   return (
     <div className="card" style={{ marginBottom: '1rem' }}>
-      <h3>Cofre de Segredos (Electron safeStorage)</h3>
-      <div className="form-grid">
-        <form
-          className="field"
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSaveSecret('ntc:gitea:pat', giteaPatInput, () => onChangeGiteaPat(''));
-          }}
-        >
-          <label htmlFor="secret-gitea-pat">
-            Token Gitea PAT ({secretStatus['ntc:gitea:pat'] ? 'Configurado' : 'Não configurado'})
-          </label>
-          <input
-            id="secret-gitea-pat"
-            type="password"
-            autoComplete="new-password"
-            spellCheck={false}
-            disabled={busy}
-            value={giteaPatInput}
-            onChange={(e) => onChangeGiteaPat(e.target.value)}
-          />
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            Salvar Gitea PAT
-          </button>
-        </form>
-
-        <form
-          className="field"
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSaveSecret(currentLlmSecretKey, llmKeyInput, () => onChangeLlmKey(''));
-          }}
-        >
-          <label htmlFor="secret-llm-key">
-            Chave/Token {provider} (
-            {secretStatus[currentLlmSecretKey] ? 'Configurado' : 'Não configurado'})
-          </label>
-          <input
-            id="secret-llm-key"
-            type="password"
-            autoComplete="new-password"
-            spellCheck={false}
-            disabled={busy}
-            value={llmKeyInput}
-            onChange={(e) => onChangeLlmKey(e.target.value)}
-          />
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            Salvar Chave BYOK
-          </button>
-        </form>
+      <div className="section-header">
+        <div>
+          <h3 style={{ margin: 0 }}>BYOK — Acesso ao Gitea</h3>
+          <p style={{ margin: '0.25rem 0 0 0', color: 'var(--muted)', fontSize: '0.9rem' }}>
+            Configure o servidor HTTPS e o Personal Access Token (PAT) do Gitea usados no espelhamento Git
+            e abertura de Pull Requests. Escopos recomendados: <code>read:repository</code>,{' '}
+            <code>write:repository</code> e <code>read:user</code>.
+          </p>
+        </div>
+        <span className={`badge ${isGiteaPatConfigured ? 'badge-ok' : 'badge-warn'}`}>
+          Gitea PAT: {isGiteaPatConfigured ? 'Configurado' : 'Não configurado'}
+        </span>
       </div>
 
-      {isCopilotOAuthMode && (
-        <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
-          {!copilotSession ? (
-            <button
-              type="button"
-              className="btn btn-primary"
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSaveGiteaAccess();
+        }}
+        style={{ marginTop: '0.75rem' }}
+      >
+        <div className="form-grid">
+          <div className="field">
+            <label htmlFor="byok-gitea-base-url">URL do Servidor Gitea (HTTPS)</label>
+            <input
+              id="byok-gitea-base-url"
               disabled={busy}
-              onClick={onStartCopilotLogin}
-            >
-              Conectar com GitHub Copilot (OAuth Device)
-            </button>
-          ) : (
-            <div className="alert alert-warn" role="status">
-              <p style={{ margin: '0 0 0.4rem 0' }}>
-                Abra <strong>{copilotSession.verificationUri}</strong> no navegador e informe o código:{' '}
-                <code>{copilotSession.userCode}</code>
-              </p>
-              <div className="toolbar">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onCopyCopilotCode(copilotSession.userCode)}
-                >
-                  Copiar Código
-                </button>
-                <button type="button" className="btn" onClick={onCancelCopilotLogin}>
-                  Cancelar Login
-                </button>
-              </div>
+              value={giteaBaseUrl}
+              placeholder={DEFAULT_GITEA_BASE_URL}
+              onChange={(e) => onChangeGiteaBaseUrl(e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="secret-gitea-pat">
+              Token Gitea PAT ({isGiteaPatConfigured ? 'Configurado' : 'Não configurado'})
+            </label>
+            <input
+              id="secret-gitea-pat"
+              type="password"
+              autoComplete="new-password"
+              spellCheck={false}
+              disabled={busy}
+              value={giteaPatInput}
+              placeholder={isGiteaPatConfigured ? 'Informe novo PAT para substituir' : 'Cole o token Gitea PAT'}
+              onChange={(e) => onChangeGiteaPatInput(e.target.value)}
+            />
+          </div>
+
+          {repos.length > 0 && (
+            <div className="field">
+              <label htmlFor="gitea-test-repo">Repositório DF-e para Teste</label>
+              <select
+                id="gitea-test-repo"
+                disabled={busy}
+                value={selectedTestRepoDfe}
+                onChange={(e) => onSelectTestRepo(e.target.value)}
+              >
+                {repos.map((repo) => (
+                  <option key={repo.dfe} value={repo.dfe}>
+                    {repo.dfe} — {repo.repoSlug}
+                  </option>
+                ))}
+                <option value="__custom__">URL personalizada</option>
+              </select>
             </div>
           )}
+
+          <div className="field">
+            <label htmlFor="doc-gitea-url">URL Gitea para Teste / Doctor</label>
+            <input
+              id="doc-gitea-url"
+              disabled={busy}
+              value={giteaTestUrl}
+              onChange={(e) => onChangeGiteaTestUrl(e.target.value)}
+            />
+          </div>
         </div>
-      )}
+
+        {repos.length > 0 && (
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              marginTop: '0.6rem',
+              fontSize: '0.9rem',
+            }}
+          >
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={syncRepoHosts}
+              onChange={(e) => onChangeSyncRepoHosts(e.target.checked)}
+            />
+            Aplicar servidor Gitea a todos os repositórios DF-e cadastrados ao salvar
+          </label>
+        )}
+
+        <div className="toolbar" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            Salvar Acesso Gitea
+          </button>
+          <button type="button" className="btn" disabled={busy} onClick={onTestGitea}>
+            Testar Conexão Gitea
+          </button>
+        </div>
+      </form>
+
+      <ConnectionTestResultPanel result={giteaTestResult} title="Teste de Funcionamento — Gitea" />
     </div>
   );
 }
 
 function DoctorDiagnosticsSection({
-  giteaUrl,
   sampleRepoDir,
   busy,
   doctorReport,
-  onChangeGiteaUrl,
   onChangeSampleRepoDir,
   onRunDoctor,
 }: {
-  readonly giteaUrl: string;
   readonly sampleRepoDir: string;
   readonly busy: boolean;
   readonly doctorReport: DoctorReport | null;
-  readonly onChangeGiteaUrl: (v: string) => void;
   readonly onChangeSampleRepoDir: (v: string) => void;
   readonly onRunDoctor: () => void;
 }) {
   return (
     <div className="card">
-      <h3>Diagnóstico de Ambiente (Doctor)</h3>
+      <h3>Diagnóstico Completo do Ambiente (Doctor)</h3>
       <div className="form-grid" style={{ marginBottom: '0.75rem' }}>
-        <div className="field">
-          <label htmlFor="doc-gitea-url">URL Gitea para checagem</label>
-          <input
-            id="doc-gitea-url"
-            disabled={busy}
-            value={giteaUrl}
-            onChange={(e) => onChangeGiteaUrl(e.target.value)}
-          />
-        </div>
         <div className="field">
           <label htmlFor="doc-repo-dir">Diretório parser local (.m2 offline)</label>
           <input
@@ -415,12 +491,24 @@ export function SettingsByokDoctor({
   onChangeConfig,
   onGoHome,
 }: SettingsByokDoctorProps) {
+  const normalizedConfig = useMemo(() => normalizeCopilotByokConfig(byokConfig), [byokConfig]);
+
   const [secretStatus, setSecretStatus] = useState<Record<string, boolean>>({});
+  const [modelOptions, setModelOptions] = useState<readonly CopilotModelOption[]>(CURATED_COPILOT_MODELS);
+  const [modelsSource, setModelsSource] = useState<'subscription' | 'curated'>('curated');
+  const [modelsWarning, setModelsWarning] = useState<string | null>(null);
+  const [repos, setRepos] = useState<readonly DfeRepoEntry[]>([]);
+  const [giteaBaseUrl, setGiteaBaseUrl] = useState(
+    normalizedConfig.giteaBaseUrl ?? DEFAULT_GITEA_BASE_URL,
+  );
   const [giteaPatInput, setGiteaPatInput] = useState('');
-  const [llmKeyInput, setLlmKeyInput] = useState('');
-  const [giteaUrl, setGiteaUrl] = useState('https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/nfe-parser');
+  const [syncRepoHosts, setSyncRepoHosts] = useState(true);
+  const [selectedTestRepoDfe, setSelectedTestRepoDfe] = useState('__custom__');
+  const [giteaTestUrl, setGiteaTestUrl] = useState(DEFAULT_GITEA_TEST_URL);
   const [sampleRepoDir, setSampleRepoDir] = useState('');
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
+  const [copilotTestResult, setCopilotTestResult] = useState<ConnectionTestResult | null>(null);
+  const [giteaTestResult, setGiteaTestResult] = useState<ConnectionTestResult | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copilotSession, setCopilotSession] = useState<CopilotAuthStartResponse | null>(null);
@@ -428,35 +516,81 @@ export function SettingsByokDoctor({
 
   const isMountedRef = useRef(true);
   const statusSeqRef = useRef(0);
-  const byokConfigRef = useRef(byokConfig);
+  const byokConfigRef = useRef(normalizedConfig);
 
   useEffect(() => {
-    byokConfigRef.current = byokConfig;
-  }, [byokConfig]);
+    byokConfigRef.current = normalizedConfig;
+  }, [normalizedConfig]);
+
+  useEffect(() => {
+    if (normalizedConfig.giteaBaseUrl) {
+      setGiteaBaseUrl(normalizedConfig.giteaBaseUrl);
+    }
+  }, [normalizedConfig.giteaBaseUrl]);
 
   const refreshSecretStatuses = useCallback(async () => {
     const seq = ++statusSeqRef.current;
     const entries = await Promise.all(
-      ALL_SECRET_KEYS.map(async (key) => [key, (await api.getSecretStatus({ key })).configured] as const),
+      COPILOT_BYOK_SECRET_KEYS.map(
+        async (key) => [key, (await api.getSecretStatus({ key })).configured] as const,
+      ),
     );
     if (isMountedRef.current && seq === statusSeqRef.current) {
       setSecretStatus(Object.fromEntries(entries));
     }
   }, [api]);
 
+  const loadCopilotModels = useCallback(
+    async (cfg: CopilotByokConfig) => {
+      const res = await api.listCopilotModels({
+        ...(cfg.endpointUrl ? { endpointUrl: cfg.endpointUrl } : {}),
+        ...(cfg.enterpriseSlug ? { enterpriseSlug: cfg.enterpriseSlug } : {}),
+      });
+      if (!isMountedRef.current) {
+        return;
+      }
+      setModelOptions(res.models);
+      setModelsSource(res.source);
+      setModelsWarning(res.warning);
+    },
+    [api],
+  );
+
   useEffect(() => {
     isMountedRef.current = true;
     let cancelled = false;
-    void refreshSecretStatuses().catch((err: unknown) => {
-      if (!cancelled && isMountedRef.current) {
-        setErrorMessage(toErrorMessage(err));
-      }
-    });
+    void Promise.all([
+      refreshSecretStatuses(),
+      api.listRepos().catch(() => [] as readonly DfeRepoEntry[]),
+      loadCopilotModels(byokConfigRef.current).catch(() => undefined),
+    ])
+      .then(([, loadedRepos]) => {
+        if (cancelled || !isMountedRef.current || loadedRepos.length === 0) {
+          return;
+        }
+        setRepos(loadedRepos);
+        const firstRepo = loadedRepos[0];
+        if (firstRepo) {
+          setSelectedTestRepoDfe(firstRepo.dfe);
+          setGiteaTestUrl(firstRepo.giteaUrl);
+          if (!byokConfigRef.current.giteaBaseUrl) {
+            const origin = extractUrlOrigin(firstRepo.giteaUrl);
+            if (origin) {
+              setGiteaBaseUrl(origin);
+            }
+          }
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled && isMountedRef.current) {
+          setErrorMessage(toErrorMessage(err));
+        }
+      });
     return () => {
       cancelled = true;
       isMountedRef.current = false;
     };
-  }, [refreshSecretStatuses]);
+  }, [api, loadCopilotModels, refreshSecretStatuses]);
 
   useEffect(() => {
     if (!copilotSession) {
@@ -495,8 +629,9 @@ export function SettingsByokDoctor({
         if (res.status === 'authorized') {
           await refreshSecretStatuses();
           const saved = await api.saveByokConfig(byokConfigRef.current);
+          await loadCopilotModels(byokConfigRef.current).catch(() => undefined);
           if (!cancelled && isMountedRef.current) {
-            onChangeConfig(saved);
+            onChangeConfig(normalizeCopilotByokConfig(saved));
             setCopilotSession(null);
             setStatusMessage('GitHub Copilot autorizado e configuração BYOK salva.');
           }
@@ -528,26 +663,89 @@ export function SettingsByokDoctor({
         window.clearTimeout(timerId);
       }
     };
-  }, [api, copilotSession, onChangeConfig, refreshSecretStatuses]);
-
-  function handleProviderChange(provider: ByokConfig['provider']): void {
-    setLlmKeyInput('');
-    setCopilotSession(null);
-    setDoctorReport(null);
-    setStatusMessage(null);
-    setErrorMessage(null);
-    onChangeConfig(buildSwitchedConfig(byokConfig, provider));
-  }
+  }, [api, copilotSession, loadCopilotModels, onChangeConfig, refreshSecretStatuses]);
 
   async function handleSaveByokConfig(): Promise<void> {
     setErrorMessage(null);
     setStatusMessage(null);
+    if (
+      normalizedConfig.endpointUrl &&
+      !isSafeEndpointInput(normalizedConfig.endpointUrl, false)
+    ) {
+      setErrorMessage('Endpoint URL do GitHub Copilot deve utilizar HTTPS público.');
+      return;
+    }
     setBusy(true);
     try {
-      const saved = await api.saveByokConfig(byokConfig);
+      const saved = await api.saveByokConfig(normalizedConfig);
       if (isMountedRef.current) {
-        onChangeConfig(saved);
-        setStatusMessage(`Configuração BYOK (${saved.provider} / ${saved.modelId}) salva.`);
+        const next = normalizeCopilotByokConfig(saved);
+        onChangeConfig(next);
+        setStatusMessage(`Configuração BYOK (GitHub Copilot / ${next.modelId}) salva.`);
+      }
+    } catch (err: unknown) {
+      if (isMountedRef.current) {
+        setErrorMessage(toErrorMessage(err));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleRefreshModels(): Promise<void> {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    if (
+      normalizedConfig.endpointUrl &&
+      !isSafeEndpointInput(normalizedConfig.endpointUrl, false)
+    ) {
+      setErrorMessage('Endpoint URL do GitHub Copilot deve utilizar HTTPS público.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.listCopilotModels({
+        ...(normalizedConfig.endpointUrl ? { endpointUrl: normalizedConfig.endpointUrl } : {}),
+        ...(normalizedConfig.enterpriseSlug ? { enterpriseSlug: normalizedConfig.enterpriseSlug } : {}),
+      });
+      if (isMountedRef.current) {
+        setModelOptions(res.models);
+        setModelsSource(res.source);
+        setModelsWarning(res.warning);
+        setStatusMessage(
+          res.source === 'subscription'
+            ? `${res.models.length} modelos carregados da sua assinatura GitHub Copilot.`
+            : 'Catálogo base de modelos GitHub Copilot carregado.',
+        );
+      }
+    } catch (err: unknown) {
+      if (isMountedRef.current) {
+        setErrorMessage(toErrorMessage(err));
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleTestCopilot(): Promise<void> {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    if (
+      normalizedConfig.endpointUrl &&
+      !isSafeEndpointInput(normalizedConfig.endpointUrl, false)
+    ) {
+      setErrorMessage('Endpoint URL do GitHub Copilot deve utilizar HTTPS público.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api.testCopilot({ byokConfig: normalizedConfig });
+      if (isMountedRef.current) {
+        setCopilotTestResult(result);
       }
     } catch (err: unknown) {
       if (isMountedRef.current) {
@@ -588,30 +786,117 @@ export function SettingsByokDoctor({
     }
   }
 
-  async function saveSecretInput(
-    key: SecretKeyTarget,
-    value: string,
-    clearFn: () => void,
-  ): Promise<void> {
+  async function handleSaveGiteaAccess(): Promise<void> {
     setErrorMessage(null);
     setStatusMessage(null);
-    if (!value.trim()) {
-      setErrorMessage('Informe o token antes de salvar.');
+    const trimmedBaseUrl = giteaBaseUrl.trim();
+    const trimmedPat = giteaPatInput.trim();
+    if (!trimmedBaseUrl && !trimmedPat) {
+      setErrorMessage('Informe a URL do servidor Gitea ou o Token Gitea PAT antes de salvar.');
       return;
     }
+    if (trimmedBaseUrl && !isSafeHttpsUrlInput(trimmedBaseUrl)) {
+      setErrorMessage('URL do servidor Gitea deve utilizar HTTPS sem credenciais embutidas.');
+      return;
+    }
+
     setBusy(true);
     try {
-      await api.setSecret({ key, value });
-      await refreshSecretStatuses();
+      if (trimmedPat) {
+        await api.setSecret({ key: 'ntc:gitea:pat', value: trimmedPat });
+        await refreshSecretStatuses();
+      }
+
+      const normalizedOrigin = trimmedBaseUrl ? extractUrlOrigin(trimmedBaseUrl) : null;
+      if (normalizedOrigin) {
+        const nextConfig: CopilotByokConfig = {
+          ...normalizedConfig,
+          giteaBaseUrl: normalizedOrigin,
+        };
+        const saved = await api.saveByokConfig(nextConfig);
+        if (isMountedRef.current) {
+          onChangeConfig(normalizeCopilotByokConfig(saved));
+          setGiteaBaseUrl(normalizedOrigin);
+        }
+
+        if (syncRepoHosts && repos.length > 0) {
+          const updatedRepos = await Promise.all(
+            repos.map(async (repo) => {
+              const repoOrigin = extractUrlOrigin(repo.giteaUrl);
+              if (repoOrigin === normalizedOrigin) {
+                return repo;
+              }
+              return api.saveRepo({
+                ...repo,
+                giteaUrl: rewriteRepoOrigin(repo.giteaUrl, normalizedOrigin),
+              });
+            }),
+          );
+          if (isMountedRef.current) {
+            setRepos(updatedRepos);
+            const activeRepo = updatedRepos.find((r) => r.dfe === selectedTestRepoDfe);
+            if (activeRepo) {
+              setGiteaTestUrl(activeRepo.giteaUrl);
+            } else if (extractUrlOrigin(giteaTestUrl)) {
+              setGiteaTestUrl(rewriteRepoOrigin(giteaTestUrl, normalizedOrigin));
+            }
+          }
+        }
+      }
+
       if (isMountedRef.current) {
-        setStatusMessage(`Segredo '${key}' salvo no cofre do sistema operacional.`);
+        const parts: string[] = [];
+        if (normalizedOrigin) {
+          parts.push(`servidor Gitea (${normalizedOrigin})`);
+        }
+        if (trimmedPat) {
+          parts.push('Token Gitea PAT');
+        }
+        setStatusMessage(`Acesso ao Gitea salvo (${parts.join(' + ')}).`);
       }
     } catch (err: unknown) {
       if (isMountedRef.current) {
         setErrorMessage(toErrorMessage(err));
       }
     } finally {
-      clearFn();
+      setGiteaPatInput('');
+      if (isMountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  function handleSelectTestRepo(dfe: string): void {
+    setSelectedTestRepoDfe(dfe);
+    const repo = repos.find((r) => r.dfe === dfe);
+    if (repo) {
+      setGiteaTestUrl(repo.giteaUrl);
+    }
+  }
+
+  async function handleTestGitea(): Promise<void> {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    const targetUrl = giteaTestUrl.trim() || giteaBaseUrl.trim();
+    if (!targetUrl || !isSafeHttpsUrlInput(targetUrl)) {
+      setErrorMessage('URL do Gitea para teste deve utilizar HTTPS sem credenciais embutidas.');
+      return;
+    }
+    const selectedRepo = repos.find((r) => r.dfe === selectedTestRepoDfe);
+    setBusy(true);
+    try {
+      const result = await api.testGitea({
+        giteaUrl: targetUrl,
+        ...(selectedRepo ? { baseBranch: selectedRepo.baseBranch } : {}),
+      });
+      if (isMountedRef.current) {
+        setGiteaTestResult(result);
+      }
+    } catch (err: unknown) {
+      if (isMountedRef.current) {
+        setErrorMessage(toErrorMessage(err));
+      }
+    } finally {
       if (isMountedRef.current) {
         setBusy(false);
       }
@@ -621,21 +906,14 @@ export function SettingsByokDoctor({
   async function handleRunDoctor(): Promise<void> {
     setErrorMessage(null);
     setStatusMessage(null);
-    if (giteaUrl.trim() && !isSafeHttpsUrlInput(giteaUrl)) {
+    const effectiveGiteaUrl = giteaTestUrl.trim() || giteaBaseUrl.trim();
+    if (effectiveGiteaUrl && !isSafeHttpsUrlInput(effectiveGiteaUrl)) {
       setErrorMessage('URL do Gitea para diagnóstico deve utilizar HTTPS sem credenciais embutidas.');
       return;
     }
     if (
-      byokConfig.provider === 'openai-compatible' &&
-      !isSafeEndpointInput(byokConfig.baseUrl, true)
-    ) {
-      setErrorMessage('Base URL OpenAI-compatible deve ser HTTPS ou http://localhost/127.0.0.1.');
-      return;
-    }
-    if (
-      byokConfig.provider === 'github-copilot' &&
-      byokConfig.endpointUrl &&
-      !isSafeEndpointInput(byokConfig.endpointUrl, false)
+      normalizedConfig.endpointUrl &&
+      !isSafeEndpointInput(normalizedConfig.endpointUrl, false)
     ) {
       setErrorMessage('Endpoint URL do GitHub Copilot deve utilizar HTTPS público.');
       return;
@@ -643,8 +921,8 @@ export function SettingsByokDoctor({
     setBusy(true);
     try {
       const report = await api.runDoctor({
-        byokConfig,
-        ...(giteaUrl.trim() ? { giteaUrl: giteaUrl.trim() } : {}),
+        byokConfig: normalizedConfig,
+        ...(effectiveGiteaUrl ? { giteaUrl: effectiveGiteaUrl } : {}),
         ...(sampleRepoDir.trim() ? { sampleRepoDir: sampleRepoDir.trim() } : {}),
       });
       if (isMountedRef.current) {
@@ -660,8 +938,6 @@ export function SettingsByokDoctor({
       }
     }
   }
-
-  const currentLlmSecretKey: SecretKeyTarget = `ntc:llm:${byokConfig.provider}`;
 
   return (
     <section className="card">
@@ -684,31 +960,21 @@ export function SettingsByokDoctor({
         </p>
       )}
 
-      <ByokConfigSection
-        byokConfig={byokConfig}
+      <CopilotByokSection
+        config={normalizedConfig}
+        isCopilotConnected={Boolean(secretStatus['ntc:llm:github-copilot'])}
+        modelOptions={modelOptions}
+        modelsSource={modelsSource}
+        modelsWarning={modelsWarning}
+        copilotSession={copilotSession}
+        copilotTestResult={copilotTestResult}
         busy={busy}
-        onProviderChange={handleProviderChange}
         onChangeConfig={onChangeConfig}
         onSaveConfig={() => {
           void handleSaveByokConfig();
         }}
-      />
-
-      <SecretVaultSection
-        provider={byokConfig.provider}
-        isCopilotOAuthMode={
-          byokConfig.provider === 'github-copilot' && byokConfig.authMode === 'copilot-oauth-device'
-        }
-        secretStatus={secretStatus}
-        currentLlmSecretKey={currentLlmSecretKey}
-        giteaPatInput={giteaPatInput}
-        llmKeyInput={llmKeyInput}
-        copilotSession={copilotSession}
-        busy={busy}
-        onChangeGiteaPat={setGiteaPatInput}
-        onChangeLlmKey={setLlmKeyInput}
-        onSaveSecret={(k, v, clearFn) => {
-          void saveSecretInput(k, v, clearFn);
+        onRefreshModels={() => {
+          void handleRefreshModels();
         }}
         onStartCopilotLogin={() => {
           void handleStartCopilotLogin();
@@ -718,14 +984,41 @@ export function SettingsByokDoctor({
           setStatusMessage('Login OAuth do GitHub Copilot cancelado.');
         }}
         onCopyCopilotCode={handleCopyCopilotCode}
+        onTestCopilot={() => {
+          void handleTestCopilot();
+        }}
+      />
+
+      <GiteaAccessSection
+        giteaBaseUrl={giteaBaseUrl}
+        giteaPatInput={giteaPatInput}
+        isGiteaPatConfigured={Boolean(secretStatus['ntc:gitea:pat'])}
+        syncRepoHosts={syncRepoHosts}
+        repos={repos}
+        selectedTestRepoDfe={selectedTestRepoDfe}
+        giteaTestUrl={giteaTestUrl}
+        giteaTestResult={giteaTestResult}
+        busy={busy}
+        onChangeGiteaBaseUrl={setGiteaBaseUrl}
+        onChangeGiteaPatInput={setGiteaPatInput}
+        onChangeSyncRepoHosts={setSyncRepoHosts}
+        onSelectTestRepo={handleSelectTestRepo}
+        onChangeGiteaTestUrl={(value) => {
+          setSelectedTestRepoDfe('__custom__');
+          setGiteaTestUrl(value);
+        }}
+        onSaveGiteaAccess={() => {
+          void handleSaveGiteaAccess();
+        }}
+        onTestGitea={() => {
+          void handleTestGitea();
+        }}
       />
 
       <DoctorDiagnosticsSection
-        giteaUrl={giteaUrl}
         sampleRepoDir={sampleRepoDir}
         busy={busy}
         doctorReport={doctorReport}
-        onChangeGiteaUrl={setGiteaUrl}
         onChangeSampleRepoDir={setSampleRepoDir}
         onRunDoctor={() => {
           void handleRunDoctor();

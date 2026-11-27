@@ -736,4 +736,114 @@ function buildMinimalValidPdf(text: string): Buffer {
 
     db.close();
   });
+
+  it('IPC-09: lists Copilot subscription models and runs live Copilot & Gitea connection tests securely', async () => {
+    const dir = createTempDir();
+    const db = openDatabase(path.join(dir, 'ntc.sqlite'));
+    db.seedDefaultRepos([SAMPLE_REPO]);
+
+    const secretStore = new SafeStorageSecretStore({
+      vaultFilePath: path.join(dir, 'secrets.enc.json'),
+      backend: {
+        isEncryptionAvailable: () => true,
+        encryptString: (v) => Buffer.from(v, 'utf8'),
+        decryptString: (b) => b.toString('utf8'),
+      },
+    });
+    await secretStore.setSecret('ntc:llm:github-copilot', 'ghu_ipc_copilot_secret');
+    await secretStore.setSecret('ntc:gitea:pat', 'gitea_ipc_pat_secret');
+
+    const controller = createDesktopIpcController({
+      db,
+      secretStore,
+      dataDir: dir,
+      oracleJarPath: '/opt/xsd-oracle.jar',
+      allowedSenderOrigins: ['file:///app/'],
+      emitProgress: () => undefined,
+      fetchFn: async (url) => {
+        const target = String(url);
+        if (target === 'https://api.github.com/copilot_internal/v2/token') {
+          return new Response(
+            JSON.stringify({
+              token: 'tid=ipc_session_token',
+              expires_at: Math.floor(Date.now() / 1000) + 1800,
+              endpoints: { api: 'https://api.githubcopilot.com' },
+            }),
+            { status: 200 },
+          );
+        }
+        if (target === 'https://api.githubcopilot.com/models') {
+          return new Response(
+            JSON.stringify({
+              data: [
+                { id: 'gpt-4.1', name: 'GPT-4.1', vendor: 'OpenAI', capabilities: { type: 'chat' } },
+                { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', vendor: 'Anthropic', capabilities: { type: 'chat' } },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (target === 'https://api.githubcopilot.com/chat/completions') {
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"ok":true}' } }],
+              usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 },
+            }),
+            { status: 200 },
+          );
+        }
+        if (target.endsWith('/api/v1/user')) {
+          return new Response(JSON.stringify({ login: 'operador.sef' }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({ permissions: { pull: true, push: true } }),
+          { status: 200 },
+        );
+      },
+    });
+
+    const trusted: IpcMainEventLike = { senderFrame: { url: 'file:///app/index.html' } };
+    const untrusted: IpcMainEventLike = { senderFrame: { url: 'https://evil.example/app' } };
+
+    await expect(
+      controller.dispatch(IPC_CHANNELS.LIST_COPILOT_MODELS, untrusted, undefined),
+    ).rejects.toThrow(/não autorizada|bloqueada/i);
+
+    const modelsRes = (await controller.dispatch(
+      IPC_CHANNELS.LIST_COPILOT_MODELS,
+      trusted,
+      undefined,
+    )) as { source: string; models: Array<{ id: string }> };
+    expect(modelsRes.source).toBe('subscription');
+    expect(modelsRes.models.map((m) => m.id)).toEqual(['gpt-4.1', 'claude-sonnet-4']);
+
+    const copilotTest = (await controller.dispatch(IPC_CHANNELS.TEST_COPILOT, trusted, {
+      byokConfig: {
+        provider: 'github-copilot',
+        modelId: 'claude-sonnet-4',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:github-copilot',
+        authMode: 'copilot-oauth-device',
+      },
+    })) as { ok: boolean; target: string; summary: string };
+    expect(copilotTest.ok).toBe(true);
+    expect(copilotTest.target).toBe('github-copilot');
+    expect(JSON.stringify(copilotTest)).not.toContain('ghu_ipc_copilot_secret');
+
+    const giteaTest = (await controller.dispatch(IPC_CHANNELS.TEST_GITEA, trusted, {
+      giteaUrl: 'https://gitea.apps.ticio.fazenda.mg.gov.br',
+      testGitRemote: false,
+    })) as { ok: boolean; target: string; summary: string };
+    expect(giteaTest.ok).toBe(true);
+    expect(giteaTest.target).toBe('gitea');
+    expect(JSON.stringify(giteaTest)).not.toContain('gitea_ipc_pat_secret');
+
+    await expect(
+      controller.dispatch(IPC_CHANNELS.TEST_GITEA, trusted, {
+        giteaUrl: 'http://insecure.local/repo',
+      }),
+    ).rejects.toThrow();
+
+    db.close();
+  });
 });

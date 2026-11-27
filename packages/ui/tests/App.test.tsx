@@ -359,6 +359,88 @@ describe('App Shell & Typed IPC Client', () => {
     );
   });
 
+  it('UI-07: coerces legacy non-Copilot BYOK config to GitHub Copilot OAuth subscription for NT compliance checks', async () => {
+    const user = userEvent.setup();
+    const checkCompliance = vi.fn(async () => ({
+      run: {
+        runId: 'run-cop-coerce-1',
+        dfe: 'NFe' as const,
+        ntId: 'NFe:2025.002:1.30',
+        status: 'DRAFT' as const,
+        failedStep: null,
+        errorMessage: null,
+        operatorName: 'Willy',
+        provider: 'github-copilot' as const,
+        modelId: 'gpt-4.1',
+        baseCommitSha: '1'.repeat(40),
+        branchName: null,
+        ncJsonPath: 'NFe/NC.json',
+        prUrl: null,
+        tokenUsage: null,
+        createdAt: '2026-11-19T12:00:00.000Z',
+        updatedAt: '2026-11-19T12:00:00.000Z',
+      },
+      nc: {
+        nc_id: 'NC-1',
+        nt_ref: {
+          dfe: 'NFe' as const,
+          nt_number: '2025.002',
+          nt_version: '1.30',
+          published_date: '2025-10-15',
+          pdf_sha256: 'a'.repeat(64),
+        },
+        base_commit_sha: '1'.repeat(40),
+        no_structural_gaps: false,
+        items: [],
+        created_at: '2026-11-19T12:00:00.000Z',
+        updated_at: '2026-11-19T12:00:00.000Z',
+      },
+      xsdDir: '/tmp/xsd',
+    }));
+
+    const api = makeMockApi({
+      getByokConfig: vi.fn(async () => ({
+        provider: 'gemini' as const,
+        modelId: 'gemini-3.1-pro-preview',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:gemini',
+      })),
+      listNts: vi.fn(async () => [
+        {
+          id: 'NFe:2025.002:1.30',
+          dfe: 'NFe' as const,
+          ntNumber: '2025.002',
+          ntVersion: '1.30',
+          publishedDate: '2025-10-15',
+          homologDate: null,
+          prodDate: null,
+          pdfUrl: null,
+          xsdUrl: null,
+          pdfSha256: 'a'.repeat(64),
+          sourceStatus: 'DOWNLOADED' as const,
+          fetchedAt: '2026-11-19T12:00:00.000Z',
+        },
+      ]),
+      checkCompliance,
+    });
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole('button', { name: /^NFe\b/i }));
+    await user.click(await screen.findByRole('button', { name: /Verificar conformidade/i }));
+
+    expect(checkCompliance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        byokConfig: {
+          provider: 'github-copilot',
+          modelId: 'gpt-4.1',
+          operatorName: 'Willy',
+          secretKeyRef: 'ntc:llm:github-copilot',
+          authMode: 'copilot-oauth-device',
+        },
+      }),
+    );
+  });
+
   it('UI-06: clicking "Revisar NC" on an already-verified NT opens NcReview directly without calling checkCompliance', async () => {
     const user = userEvent.setup();
     const checkCompliance = vi.fn();

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ExecFileAsyncFn } from '../src/oracle/xsd-ast-diff.js';
+import { testCopilotConnection, testGiteaConnection } from '../src/toolchain/connection-tests.js';
 import { runDoctor } from '../src/toolchain/doctor.js';
 import {
   buildSanitizedToolchainEnv,
@@ -411,5 +412,170 @@ describe('Toolchain Doctor & Host Maven Runner', () => {
     expect(giteaCheck?.status).toBe('ERROR');
     expect(giteaCheck?.summary).toMatch(/401/);
     expect(JSON.stringify(badPatReport)).not.toContain('expired-gitea-pat');
+  });
+
+  it('DM-10: testCopilotConnection and testGiteaConnection verify live auth, model inference, repo permissions, and git remote without leaking secrets', async () => {
+    const secrets: Record<string, string> = {};
+    const secretStore = {
+      async setSecret(key: string, value: string) {
+        secrets[key] = value;
+      },
+      async getSecret(key: string) {
+        return secrets[key] ?? null;
+      },
+      async getSecretStatus(key: string) {
+        return { configured: Boolean(secrets[key]) };
+      },
+      async deleteSecret(key: string) {
+        delete secrets[key];
+      },
+    };
+
+    const copilotMissing = await testCopilotConnection({
+      byokConfig: {
+        provider: 'github-copilot',
+        modelId: 'gpt-4.1',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:github-copilot',
+        authMode: 'copilot-oauth-device',
+      },
+      secretStore,
+    });
+    expect(copilotMissing.ok).toBe(false);
+    expect(copilotMissing.summary).toMatch(/não conectado/i);
+
+    secrets['ntc:llm:github-copilot'] = 'ghu_secret_copilot_token';
+    const copilotOk = await testCopilotConnection({
+      byokConfig: {
+        provider: 'github-copilot',
+        modelId: 'claude-sonnet-4',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:github-copilot',
+        authMode: 'copilot-oauth-device',
+      },
+      secretStore,
+      fetchFn: async (url) => {
+        if (url === 'https://api.github.com/copilot_internal/v2/token') {
+          return new Response(
+            JSON.stringify({
+              token: 'tid=sess_secret_123;exp=9999999999',
+              expires_at: Math.floor(Date.now() / 1000) + 1800,
+              endpoints: { api: 'https://api.githubcopilot.com' },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"ok":true}' } }],
+            usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    expect(copilotOk.ok).toBe(true);
+    expect(copilotOk.steps).toHaveLength(3);
+    expect(copilotOk.metadata?.modelId).toBe('claude-sonnet-4');
+    expect(JSON.stringify(copilotOk)).not.toContain('ghu_secret_copilot_token');
+    expect(JSON.stringify(copilotOk)).not.toContain('tid=sess_secret_123');
+
+    const copilotBadModel = await testCopilotConnection({
+      byokConfig: {
+        provider: 'github-copilot',
+        modelId: 'invalid-model',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:github-copilot',
+        authMode: 'copilot-oauth-device',
+      },
+      secretStore,
+      fetchFn: async (url) => {
+        if (url === 'https://api.github.com/copilot_internal/v2/token') {
+          return new Response(
+            JSON.stringify({
+              token: 'tid=sess_secret_456',
+              expires_at: Math.floor(Date.now() / 1000) + 1800,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response('Model not found', { status: 404 });
+      },
+    });
+    expect(copilotBadModel.ok).toBe(false);
+    expect(copilotBadModel.details).toMatch(/indisponível|404/i);
+    expect(JSON.stringify(copilotBadModel)).not.toContain('tid=sess_secret_456');
+
+    secrets['ntc:gitea:pat'] = 'gitea_pat_never_leak';
+    const giteaOk = await testGiteaConnection({
+      giteaUrl: 'https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/nfe-parser',
+      secretStore,
+      fetchFn: async (url) => {
+        if (url.endsWith('/api/v1/user')) {
+          return new Response(JSON.stringify({ login: 'willy.cornelissen' }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            full_name: 'Integracao/nfe-parser',
+            default_branch: 'master',
+            permissions: { pull: true, push: true },
+          }),
+          { status: 200 },
+        );
+      },
+      execFileFn: async () => ({
+        stdout: `${'a'.repeat(40)}\trefs/heads/master\n`,
+        stderr: '',
+      }),
+    });
+    expect(giteaOk.ok).toBe(true);
+    expect(giteaOk.steps).toHaveLength(4);
+    expect(giteaOk.metadata?.branch).toBe('master');
+    expect(JSON.stringify(giteaOk)).not.toContain('gitea_pat_never_leak');
+
+    const giteaReadOnly = await testGiteaConnection({
+      giteaUrl: 'https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/nfe-parser',
+      secretStore,
+      fetchFn: async (url) => {
+        if (url.endsWith('/api/v1/user')) {
+          return new Response(JSON.stringify({ login: 'willy' }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({ permissions: { pull: true, push: false } }),
+          { status: 200 },
+        );
+      },
+    });
+    expect(giteaReadOnly.ok).toBe(false);
+    expect(giteaReadOnly.summary).toMatch(/Sem permissão de escrita/i);
+
+    const doctorCopilotExpired = await runDoctor({
+      giteaUrl: 'https://gitea.apps.ticio.fazenda.mg.gov.br/Integracao/nfe-parser',
+      byokConfig: {
+        provider: 'github-copilot',
+        modelId: 'gpt-4.1',
+        operatorName: 'Op',
+        secretKeyRef: 'ntc:llm:github-copilot',
+        authMode: 'copilot-oauth-device',
+      },
+      secretStore,
+      fetchFn: async (url) => {
+        if (url.includes('copilot_internal')) {
+          return new Response('Bad credentials', { status: 401 });
+        }
+        if (url.endsWith('/api/v1/user')) {
+          return new Response(JSON.stringify({ login: 'willy' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ permissions: { pull: true, push: true } }), { status: 200 });
+      },
+      execFileFn: async (file, args) => {
+        if (file === 'java') return { stdout: '', stderr: 'openjdk version "21.0.4"' };
+        if (file === 'mvn') return { stdout: 'Apache Maven 3.8.7', stderr: '' };
+        if (file === 'git' && args[0] === '--version') return { stdout: 'git version 2.43.0', stderr: '' };
+        return { stdout: 'x', stderr: '' };
+      },
+    });
+    expect(doctorCopilotExpired.checks.find((c) => c.id === 'LLM_ENDPOINT')?.status).toBe('ERROR');
+    expect(doctorCopilotExpired.checks.find((c) => c.id === 'GITEA_API')?.status).toBe('OK');
   });
 });

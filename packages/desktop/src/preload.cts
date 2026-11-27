@@ -67,6 +67,9 @@ export function createNtcBridge(ipcRenderer: IpcRendererLike): NtcDesktopApi {
     saveByokConfig: (cfg) => invokeChannel(ipcRenderer, 'ntc:save-byok-config', cfg),
     startCopilotAuth: () => invokeChannel(ipcRenderer, 'ntc:start-copilot-auth'),
     pollCopilotAuth: (req) => invokeChannel(ipcRenderer, 'ntc:poll-copilot-auth', req),
+    listCopilotModels: (req) => invokeChannel(ipcRenderer, 'ntc:list-copilot-models', req),
+    testCopilot: (req) => invokeChannel(ipcRenderer, 'ntc:test-copilot', req),
+    testGitea: (req) => invokeChannel(ipcRenderer, 'ntc:test-gitea', req),
     onRunProgress: (listener) => {
       if (typeof listener !== 'function') {
         throw new TypeError('listener de progresso deve ser uma função');

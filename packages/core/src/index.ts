@@ -19,6 +19,7 @@ export * from './patch/patch-guardrails.js';
 export * from './patch/patch-engine.js';
 export * from './toolchain/host-maven-runner.js';
 export * from './toolchain/doctor.js';
+export * from './toolchain/connection-tests.js';
 export {
   getErrnoCode,
   readNoFollowUtf8,

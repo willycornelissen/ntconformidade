@@ -12,6 +12,9 @@ import { GeminiAdapter } from '../src/llm/adapters/gemini.js';
 import { OpenAiCompatibleAdapter } from '../src/llm/adapters/openai-compatible.js';
 import { GithubCopilotAdapter } from '../src/llm/adapters/github-copilot.js';
 import {
+  CURATED_COPILOT_MODELS,
+  fetchCopilotSubscriptionModels,
+  listAvailableCopilotModels,
   pollCopilotDeviceToken,
   requestCopilotDeviceCode,
 } from '../src/llm/copilot-oauth.js';
@@ -917,5 +920,88 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
         'AIza-secret',
       ),
     ).rejects.toThrow(/Erro HTTP 404/i);
+  });
+
+  it('LG-13: lists Copilot subscription models via session exchange with curated fallback and omits temperature on reasoning models', async () => {
+    const emptyStore = makeSecretStore({});
+    const unauth = await listAvailableCopilotModels({ secretStore: emptyStore });
+    expect(unauth.source).toBe('curated');
+    expect(unauth.models).toEqual(CURATED_COPILOT_MODELS);
+
+    const store = makeSecretStore({ 'ntc:llm:github-copilot': 'ghu_copilot_oauth_secret' });
+    const seenChatBodies: Array<Record<string, unknown>> = [];
+    const fetchFn: FetchFn = async (url, init) => {
+      if (url === 'https://api.github.com/copilot_internal/v2/token') {
+        return new Response(
+          JSON.stringify({
+            token: 'tid=copilot_sess_models;exp=9999999999',
+            expires_at: Math.floor(Date.now() / 1000) + 1800,
+            endpoints: { api: 'https://api.githubcopilot.com' },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://api.githubcopilot.com/models') {
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: 'gpt-4.1', name: 'GPT-4.1', vendor: 'OpenAI', model_picker_enabled: true, capabilities: { type: 'chat' } },
+              { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', vendor: 'Anthropic', model_picker_enabled: true, capabilities: { type: 'chat' } },
+              { id: 'text-embedding-3-small', capabilities: { type: 'embeddings' } },
+              { id: 'hidden-model', model_picker_enabled: false, capabilities: { type: 'chat' } },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      seenChatBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"ok":true}' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+        { status: 200 },
+      );
+    };
+
+    const listed = await listAvailableCopilotModels({ secretStore: store, fetchFn });
+    expect(listed.source).toBe('subscription');
+    expect(listed.warning).toBeNull();
+    expect(listed.models).toEqual([
+      { id: 'gpt-4.1', name: 'GPT-4.1', vendor: 'OpenAI', source: 'subscription' },
+      { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', vendor: 'Anthropic', source: 'subscription' },
+    ]);
+
+    const direct = await fetchCopilotSubscriptionModels({
+      secret: 'ghu_copilot_oauth_secret',
+      fetchFn,
+    });
+    expect(direct.apiOrigin).toBe('https://api.githubcopilot.com');
+
+    const adapter = new GithubCopilotAdapter({ fetchFn });
+    await adapter.completeStructured(
+      {
+        config: {
+          provider: 'github-copilot',
+          modelId: 'gpt-5',
+          operatorName: 'Op',
+          secretKeyRef: 'ntc:llm:github-copilot',
+          authMode: 'copilot-oauth-device',
+        },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+      },
+      'ghu_copilot_oauth_secret',
+    );
+    expect(seenChatBodies).toHaveLength(1);
+    expect(seenChatBodies[0]?.temperature).toBeUndefined();
+
+    const fallback = await listAvailableCopilotModels({
+      secretStore: store,
+      fetchFn: async () => new Response('Forbidden', { status: 403 }),
+    });
+    expect(fallback.source).toBe('curated');
+    expect(fallback.warning).toMatch(/403/);
+    expect(fallback.warning).not.toContain('ghu_copilot_oauth_secret');
   });
 });

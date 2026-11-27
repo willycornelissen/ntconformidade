@@ -53,6 +53,10 @@ function extractChoiceText(rawContent: string | ReadonlyArray<{ readonly text?: 
   return '';
 }
 
+function isReasoningModelId(modelId: string): boolean {
+  return /^(?:o[134](?:-|$)|gpt-5)/i.test(modelId.trim());
+}
+
 /** Shared executor for OpenAI-compatible `/chat/completions` endpoints (used by OpenAI & Copilot adapters). */
 export async function executeOpenAiChatCompletion(options: {
   readonly url: string;
@@ -63,12 +67,18 @@ export async function executeOpenAiChatCompletion(options: {
   readonly fetchFn?: FetchFn;
 }): Promise<LlmCompletionResponse> {
   const { request, apiSecret } = options;
+  const resolvedTemperature =
+    request.config.temperature !== undefined
+      ? request.config.temperature
+      : isReasoningModelId(request.config.modelId)
+        ? undefined
+        : 0.1;
   const rawJson = await postJsonWithManualRedirects({
     url: options.url,
     headers: { Authorization: `Bearer ${apiSecret}`, ...options.extraHeaders },
     body: {
       model: request.config.modelId,
-      temperature: request.config.temperature ?? 0.1,
+      ...(resolvedTemperature !== undefined ? { temperature: resolvedTemperature } : {}),
       ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
       messages: [
         { role: 'system', content: request.systemPrompt },

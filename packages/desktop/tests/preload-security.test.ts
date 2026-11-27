@@ -58,6 +58,9 @@ describe('Preload Bridge & Electron BrowserWindow Security', () => {
       'saveByokConfig',
       'startCopilotAuth',
       'pollCopilotAuth',
+      'listCopilotModels',
+      'testCopilot',
+      'testGitea',
       'onRunProgress',
     ];
     for (const method of expectedMethods) {

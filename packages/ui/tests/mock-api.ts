@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import type { NtcDesktopApi } from '@ntc/core';
+import { CURATED_COPILOT_MODELS } from '../src/api/helpers.js';
 
 export function makeMockApi(overrides: Partial<NtcDesktopApi> = {}): NtcDesktopApi {
   return {
@@ -39,6 +40,29 @@ export function makeMockApi(overrides: Partial<NtcDesktopApi> = {}): NtcDesktopA
       interval: 1,
     })),
     pollCopilotAuth: vi.fn(async () => ({ status: 'pending' as const })),
+    listCopilotModels: vi.fn(async () => ({
+      models: [...CURATED_COPILOT_MODELS],
+      source: 'curated' as const,
+      warning: null,
+    })),
+    testCopilot: vi.fn(async () => ({
+      ok: true,
+      target: 'github-copilot' as const,
+      checkedAt: '2026-11-27T12:00:00.000Z',
+      latencyMs: 42,
+      summary: 'GitHub Copilot operacional (gpt-4.1)',
+      details: 'Tokens: 15',
+      steps: [{ name: 'Inferência no modelo gpt-4.1', ok: true, message: 'OK' }],
+    })),
+    testGitea: vi.fn(async () => ({
+      ok: true,
+      target: 'gitea' as const,
+      checkedAt: '2026-11-27T12:00:00.000Z',
+      latencyMs: 28,
+      summary: 'Gitea operacional',
+      details: 'Usuário: dev',
+      steps: [{ name: 'Autenticação API Gitea', ok: true, message: 'OK' }],
+    })),
     onRunProgress: vi.fn(() => () => undefined),
     ...overrides,
   };

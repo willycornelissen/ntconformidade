@@ -3,11 +3,13 @@ import type { ManualNtImportRequest, MavenTestRunResult } from '../ports/interfa
 import {
   ByokConfigSchema,
   ComplianceRunSchema,
+  ConnectionTestResultSchema,
   DfeCodeSchema,
   DfeRepoEntrySchema,
   DoctorReportSchema,
   GITEA_PAT_SECRET_KEY,
   HttpsUrlSchema,
+  ListCopilotModelsResultSchema,
   ManualNtImportRequestSchema,
   MavenTestRunResultIpcSchema,
   NcDocumentSchema,
@@ -18,9 +20,11 @@ import {
   llmSecretKey,
   type ByokConfig,
   type ComplianceRun,
+  type ConnectionTestResult,
   type DfeCode,
   type DfeRepoEntry,
   type DoctorReport,
+  type ListCopilotModelsResult,
   type NcDocument,
   type NtCatalogEntry,
   type PreBuildDiffPreview,
@@ -48,6 +52,9 @@ export const IPC_CHANNELS = Object.freeze({
   SAVE_BYOK_CONFIG: 'ntc:save-byok-config',
   START_COPILOT_AUTH: 'ntc:start-copilot-auth',
   POLL_COPILOT_AUTH: 'ntc:poll-copilot-auth',
+  LIST_COPILOT_MODELS: 'ntc:list-copilot-models',
+  TEST_COPILOT: 'ntc:test-copilot',
+  TEST_GITEA: 'ntc:test-gitea',
   LIST_RUNS: 'ntc:list-runs',
   GET_PENDING_GATE: 'ntc:get-pending-gate',
   RUN_PROGRESS: 'ntc:run-progress',
@@ -179,6 +186,22 @@ export const StartCopilotAuthRequestSchema = z.undefined();
 export const PollCopilotAuthRequestSchema = z.object({
   deviceCode: z.string().min(1),
 });
+export const ListCopilotModelsRequestSchema = z
+  .object({
+    endpointUrl: HttpsUrlSchema.optional(),
+    enterpriseSlug: z.string().min(1).optional(),
+  })
+  .optional();
+export const TestCopilotRequestSchema = z
+  .object({
+    byokConfig: IpcByokConfigSchema.optional(),
+  })
+  .optional();
+export const TestGiteaRequestSchema = z.object({
+  giteaUrl: HttpsUrlSchema,
+  baseBranch: z.string().min(1).optional(),
+  testGitRemote: z.boolean().optional(),
+});
 
 export const CopilotAuthStartResponseSchema = z.object({
   deviceCode: z.string().min(1),
@@ -197,6 +220,8 @@ export const CopilotAuthPollResponseSchema = z.object({
 export type CopilotAuthPollResponse = z.infer<typeof CopilotAuthPollResponseSchema>;
 
 export const GetByokConfigResponseSchema = ByokConfigSchema.nullable();
+export const ListCopilotModelsResponseSchema = ListCopilotModelsResultSchema;
+export const ConnectionTestResponseSchema = ConnectionTestResultSchema;
 
 export interface NcLoadedView {
   readonly run: ComplianceRun;
@@ -293,6 +318,9 @@ export interface NtcInvokeResponseMap {
   readonly [IPC_CHANNELS.SAVE_BYOK_CONFIG]: ByokConfig;
   readonly [IPC_CHANNELS.START_COPILOT_AUTH]: CopilotAuthStartResponse;
   readonly [IPC_CHANNELS.POLL_COPILOT_AUTH]: CopilotAuthPollResponse;
+  readonly [IPC_CHANNELS.LIST_COPILOT_MODELS]: ListCopilotModelsResult;
+  readonly [IPC_CHANNELS.TEST_COPILOT]: ConnectionTestResult;
+  readonly [IPC_CHANNELS.TEST_GITEA]: ConnectionTestResult;
 }
 
 /** Typed preload bridge contract exposed to `@ntc/ui` as `window.ntcApi`. */
@@ -342,5 +370,15 @@ export interface NtcDesktopApi {
   saveByokConfig(config: ByokConfig): Promise<ByokConfig>;
   startCopilotAuth(): Promise<CopilotAuthStartResponse>;
   pollCopilotAuth(request: { readonly deviceCode: string }): Promise<CopilotAuthPollResponse>;
+  listCopilotModels(request?: {
+    readonly endpointUrl?: string;
+    readonly enterpriseSlug?: string;
+  }): Promise<ListCopilotModelsResult>;
+  testCopilot(request?: { readonly byokConfig?: ByokConfig }): Promise<ConnectionTestResult>;
+  testGitea(request: {
+    readonly giteaUrl: string;
+    readonly baseBranch?: string;
+    readonly testGitRemote?: boolean;
+  }): Promise<ConnectionTestResult>;
   onRunProgress(listener: (event: RunProgressEvent) => void): () => void;
 }

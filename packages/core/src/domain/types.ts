@@ -430,12 +430,15 @@ export const PatchPayloadSchema = z.object({
 });
 export type PatchPayload = z.infer<typeof PatchPayloadSchema>;
 
+export const DEFAULT_COPILOT_MODEL_ID = 'gpt-4.1';
+
 const BYOK_COMMON_FIELDS = {
   modelId: z.string().trim().min(1),
   operatorName: z.string().trim().min(1),
   secretKeyRef: z.string().trim().min(1),
   maxTokensPerStage: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  giteaBaseUrl: HttpsUrlSchema.optional(),
 };
 
 const RemoteVendorUrlSchema = z
@@ -523,6 +526,40 @@ export const DoctorReportSchema = z.object({
   checks: z.array(DoctorCheckResultSchema).min(1),
 });
 export type DoctorReport = z.infer<typeof DoctorReportSchema>;
+
+export const CopilotModelOptionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  vendor: z.string().optional(),
+  source: z.enum(['subscription', 'curated']),
+});
+export type CopilotModelOption = z.infer<typeof CopilotModelOptionSchema>;
+
+export const ListCopilotModelsResultSchema = z.object({
+  models: z.array(CopilotModelOptionSchema).min(1),
+  source: z.enum(['subscription', 'curated']),
+  warning: z.string().nullable(),
+});
+export type ListCopilotModelsResult = z.infer<typeof ListCopilotModelsResultSchema>;
+
+export const ConnectionTestStepSchema = z.object({
+  name: z.string().min(1),
+  ok: z.boolean(),
+  message: z.string().min(1),
+});
+export type ConnectionTestStep = z.infer<typeof ConnectionTestStepSchema>;
+
+export const ConnectionTestResultSchema = z.object({
+  ok: z.boolean(),
+  target: z.enum(['github-copilot', 'gitea']),
+  checkedAt: IsoDatetimeSchema,
+  latencyMs: z.number().int().nonnegative(),
+  summary: z.string().min(1),
+  details: z.string().nullable(),
+  steps: z.array(ConnectionTestStepSchema).min(1),
+  metadata: z.record(z.string(), z.string()).optional(),
+});
+export type ConnectionTestResult = z.infer<typeof ConnectionTestResultSchema>;
 
 export const SurefireSummarySchema = z.object({
   total: z.number().int().nonnegative(),

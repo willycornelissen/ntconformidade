@@ -11,8 +11,10 @@ import {
   CheckComplianceResponseSchema,
   ComplianceOrchestrator,
   ConfirmPreBuildDiffRequestSchema,
+  ConnectionTestResponseSchema,
   CopilotAuthPollResponseSchema,
   CopilotAuthStartResponseSchema,
+  DEFAULT_COPILOT_MODEL_ID,
   DoctorReportIpcSchema,
   GetByokConfigRequestSchema,
   GetByokConfigResponseSchema,
@@ -25,6 +27,8 @@ import {
   IPC_CHANNELS,
   ImportManualNtInputSchema,
   ImportManualNtResponseSchema,
+  ListCopilotModelsRequestSchema,
+  ListCopilotModelsResponseSchema,
   ListNtsRequestSchema,
   ListNtsResponseSchema,
   ListReposRequestSchema,
@@ -45,11 +49,14 @@ import {
   StartCopilotAuthRequestSchema,
   SyncSvrsRequestSchema,
   SyncSvrsResponseSchema,
+  TestCopilotRequestSchema,
+  TestGiteaRequestSchema,
   WorktreeManager,
   XsdOracleBridge,
   detectJavaNeedsRelease8Flag,
   extractNtPdf,
   importManualNt,
+  listAvailableCopilotModels,
   llmSecretKey,
   loadNcDocument,
   pollCopilotDeviceToken,
@@ -60,6 +67,8 @@ import {
   sanitizeLogMessage,
   saveNcDocument,
   syncAllSvrsNts,
+  testCopilotConnection,
+  testGiteaConnection,
   type ApplyNcOutcome,
   type ComplianceRun,
   type InvokeIpcChannelName,
@@ -622,6 +631,45 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
         ...(outcome.interval !== undefined ? { interval: outcome.interval } : {}),
         ...(outcome.error !== undefined ? { error: outcome.error } : {}),
       });
+    },
+    [IPC_CHANNELS.LIST_COPILOT_MODELS]: async (raw) => {
+      const req = ListCopilotModelsRequestSchema.parse(raw);
+      const result = await listAvailableCopilotModels({
+        secretStore: deps.secretStore,
+        endpointUrl: req?.endpointUrl,
+        enterpriseSlug: req?.enterpriseSlug,
+        fetchFn: deps.fetchFn ?? fetch,
+      });
+      return ListCopilotModelsResponseSchema.parse(result);
+    },
+    [IPC_CHANNELS.TEST_COPILOT]: async (raw) => {
+      const req = TestCopilotRequestSchema.parse(raw);
+      const effectiveConfig = req?.byokConfig ??
+        deps.db.getByokConfig() ?? {
+          provider: 'github-copilot' as const,
+          modelId: DEFAULT_COPILOT_MODEL_ID,
+          operatorName: 'Operador',
+          secretKeyRef: llmSecretKey('github-copilot'),
+          authMode: 'copilot-oauth-device' as const,
+        };
+      assertBoundByokSecretKeyRef(effectiveConfig);
+      const result = await testCopilotConnection({
+        byokConfig: effectiveConfig,
+        secretStore: deps.secretStore,
+        fetchFn: deps.fetchFn ?? fetch,
+      });
+      return ConnectionTestResponseSchema.parse(result);
+    },
+    [IPC_CHANNELS.TEST_GITEA]: async (raw) => {
+      const req = TestGiteaRequestSchema.parse(raw);
+      const result = await testGiteaConnection({
+        giteaUrl: req.giteaUrl,
+        baseBranch: req.baseBranch,
+        testGitRemote: req.testGitRemote,
+        secretStore: deps.secretStore,
+        fetchFn: deps.fetchFn ?? fetch,
+      });
+      return ConnectionTestResponseSchema.parse(result);
     },
   };
 
