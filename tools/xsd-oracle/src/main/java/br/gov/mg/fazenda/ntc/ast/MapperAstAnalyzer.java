@@ -15,6 +15,9 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
+import com.github.javaparser.ast.expr.VariableDeclarationExpr;
+import com.github.javaparser.ast.stmt.SwitchEntry;
+import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.Type;
 
@@ -79,22 +82,26 @@ public final class MapperAstAnalyzer {
         Map<String, String> mapTargetDtos = collectSetterMapTargetDtos(cls);
         List<MapPutEntry> putEntries = collectMapPutEntries(cls, mapTargetDtos, domainCatalog);
 
-        if (putEntries.isEmpty()) {
-            collectDirectXmlSearchEntries(cls, mapperClass, dedup, results);
-            return;
-        }
-
-        Map<String, Set<String>> prefixesByMap = resolvePrefixesPerMap(cls, mapTargetDtos.keySet());
-        for (MapPutEntry put : putEntries) {
-            String leaf = lastSegment(put.key);
-            Set<String> prefixes = prefixesByMap.get(put.mapName);
-            if (put.key.startsWith(tagPrefix + ".") || prefixes == null || prefixes.isEmpty()) {
-                addEntry(dedup, results, put.key, leaf, mapperClass, put.targetDtoField);
-            } else {
-                for (String prefix : prefixes) {
-                    addEntry(dedup, results, prefix + "." + put.key, leaf, mapperClass, put.targetDtoField);
+        int switchCount = 0;
+        if (!putEntries.isEmpty()) {
+            Map<String, Set<String>> prefixesByMap = resolvePrefixesPerMap(cls, mapTargetDtos.keySet());
+            for (MapPutEntry put : putEntries) {
+                String leaf = lastSegment(put.key);
+                Set<String> prefixes = prefixesByMap.get(put.mapName);
+                if (put.key.startsWith(tagPrefix + ".") || prefixes == null || prefixes.isEmpty()) {
+                    addEntry(dedup, results, put.key, leaf, mapperClass, put.targetDtoField);
+                } else {
+                    for (String prefix : prefixes) {
+                        addEntry(dedup, results, prefix + "." + put.key, leaf, mapperClass, put.targetDtoField);
+                    }
                 }
             }
+        } else {
+            switchCount = collectSwitchTagPathEntries(cls, mapperClass, tagPrefix, domainCatalog, dedup, results);
+        }
+
+        if (putEntries.isEmpty() && switchCount == 0) {
+            collectDirectXmlSearchEntries(cls, mapperClass, tagPrefix, dedup, results);
         }
     }
 
@@ -318,15 +325,98 @@ public final class MapperAstAnalyzer {
                 || methodName.equals("findAllFromAncestorByTagName");
     }
 
+    private int collectSwitchTagPathEntries(
+            TypeDeclaration<?> cls,
+            String mapperClass,
+            String tagPrefix,
+            DomainCatalog domainCatalog,
+            Set<String> dedup,
+            List<SetterKeyEntry> results) {
+        int extracted = 0;
+        Map<String, List<MethodDeclaration>> methodsByName = indexMethodsByName(cls);
+        for (MethodDeclaration md : cls.getMethods()) {
+            Map<String, String> varTypes = collectMethodVarTypes(md);
+            Set<String> methodPrefixes = resolveMethodPrefixes(md, methodsByName);
+            for (SwitchStmt sw : md.findAll(SwitchStmt.class)) {
+                if (!sw.getSelector().toString().contains("getTagPath")) {
+                    continue;
+                }
+                for (SwitchEntry se : sw.getEntries()) {
+                    List<String> keys = new ArrayList<>();
+                    for (Expression label : se.getLabels()) {
+                        if (label instanceof StringLiteralExpr) {
+                            keys.add(((StringLiteralExpr) label).asString().toUpperCase(Locale.ROOT));
+                        }
+                    }
+                    if (keys.isEmpty()) {
+                        continue;
+                    }
+                    for (MethodCallExpr call : se.findAll(MethodCallExpr.class)) {
+                        String callName = call.getNameAsString();
+                        if (!callName.startsWith("set") || callName.length() <= 3) {
+                            continue;
+                        }
+                        String dtoType = resolveSetterTargetDtoType(call, varTypes);
+                        String field = domainCatalog.resolveFieldName(dtoType, stripSetPrefix(callName));
+                        for (String key : keys) {
+                            if (key.startsWith(tagPrefix + ".") || methodPrefixes.isEmpty()) {
+                                addEntry(dedup, results, key, lastSegment(key), mapperClass, field);
+                                extracted += 1;
+                            } else {
+                                for (String prefix : methodPrefixes) {
+                                    addEntry(dedup, results, prefix + "." + key, lastSegment(key), mapperClass, field);
+                                    extracted += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return extracted;
+    }
+
+    private static Map<String, String> collectMethodVarTypes(MethodDeclaration md) {
+        Map<String, String> types = new java.util.HashMap<>();
+        for (Parameter p : md.getParameters()) {
+            types.put(p.getNameAsString(), p.getType().asString());
+        }
+        for (VariableDeclarationExpr vde : md.findAll(VariableDeclarationExpr.class)) {
+            String typeName = vde.getElementType().asString();
+            for (VariableDeclarator vd : vde.getVariables()) {
+                types.put(vd.getNameAsString(), typeName);
+            }
+        }
+        return types;
+    }
+
+    private static String resolveSetterTargetDtoType(MethodCallExpr call, Map<String, String> varTypes) {
+        Expression scope = call.getScope().orElse(null);
+        if (scope instanceof NameExpr) {
+            return varTypes.getOrDefault(((NameExpr) scope).getNameAsString(), "");
+        }
+        return "";
+    }
+
     private void collectDirectXmlSearchEntries(
             TypeDeclaration<?> cls,
             String mapperClass,
+            String tagPrefix,
             Set<String> dedup,
             List<SetterKeyEntry> results) {
         Map<String, List<MethodDeclaration>> methodsByName = indexMethodsByName(cls);
         for (MethodDeclaration md : cls.getMethods()) {
             List<String> bases = extractEqualsIgnoreCasePaths(md);
             List<String> tags = extractXmlSearchTags(md, methodsByName);
+            List<String> exactTagPaths = extractDirectTagPathEquals(md, tagPrefix);
+            if (!exactTagPaths.isEmpty()) {
+                for (String full : exactTagPaths) {
+                    if (!bases.contains(full)) {
+                        String leaf = lastSegment(full);
+                        addEntry(dedup, results, full, leaf, mapperClass, leaf.toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
             for (String base : bases) {
                 for (String tag : tags) {
                     String full = base.endsWith("." + tag) ? base : base + "." + tag;
@@ -334,6 +424,25 @@ public final class MapperAstAnalyzer {
                 }
             }
         }
+    }
+
+    private static List<String> extractDirectTagPathEquals(MethodDeclaration md, String tagPrefix) {
+        List<String> found = new ArrayList<>();
+        String prefixDot = tagPrefix + ".";
+        for (MethodCallExpr call : md.findAll(MethodCallExpr.class)) {
+            if (!call.getNameAsString().equals("equals") || call.getArguments().size() != 1) {
+                continue;
+            }
+            Expression scope = call.getScope().orElse(null);
+            Expression arg = call.getArgument(0);
+            if (scope instanceof StringLiteralExpr && arg.toString().contains("getTagPath")) {
+                String path = ((StringLiteralExpr) scope).asString().toUpperCase(Locale.ROOT);
+                if (path.startsWith(prefixDot)) {
+                    found.add(path);
+                }
+            }
+        }
+        return found;
     }
 
     private Map<String, List<MethodDeclaration>> indexMethodsByName(TypeDeclaration<?> cls) {

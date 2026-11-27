@@ -263,11 +263,51 @@ function createDatabaseApi(rawDb: Database.Database): NtcDatabase {
   const repairGtvePathStmt = rawDb.prepare(
     "UPDATE dfe_repos SET svrs_relative_path = ? WHERE dfe = 'GTVe' AND svrs_relative_path = '/Gtve/Documentos'",
   );
+  const repairGtveUtilStmt = rawDb.prepare(
+    "UPDATE dfe_repos SET util_package = ? WHERE dfe = 'GTVe' AND util_package = 'br.gov.mg.fazenda.gtveparser.util'",
+  );
+  const repairBpeMapperStmt = rawDb.prepare(
+    "UPDATE dfe_repos SET mapper_package = ? WHERE dfe = 'BPe' AND mapper_package = 'br.gov.mg.fazenda.bpeparser.mapper'",
+  );
+  const repairBpeUtilStmt = rawDb.prepare(
+    "UPDATE dfe_repos SET util_package = ? WHERE dfe = 'BPe' AND util_package = 'br.gov.mg.fazenda.bpeparser.util'",
+  );
+  const repairNfcomPackagesStmt = rawDb.prepare(
+    `UPDATE dfe_repos
+     SET base_package = ?, domain_package = ?, mapper_package = ?, table_package = ?, parser_package = ?, util_package = ?
+     WHERE dfe = 'NFCom'
+       AND domain_package = 'br.gov.mg.fazenda.nfcomparser.nfcom'
+       AND mapper_package = 'br.gov.mg.fazenda.nfcomparser.mapper'`,
+  );
+  const repairNfcePackagesStmt = rawDb.prepare(
+    `UPDATE dfe_repos
+     SET base_package = ?, domain_package = ?, mapper_package = ?, table_package = ?, parser_package = ?, util_package = ?
+     WHERE dfe = 'NFCe'
+       AND domain_package = 'br.gov.mg.fazenda.nfceparser.nfce'
+       AND mapper_package = 'br.gov.mg.fazenda.nfceparser.mapper'`,
+  );
   const repairNfeEventSchemaStmt = rawDb.prepare(
     `UPDATE nt_catalog
      SET xsd_url = 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=2&nomeArquivo=PL_010b_NT2025_002_v1.30.zip'
      WHERE dfe = 'NFe' AND nt_number = '2025.002' AND xsd_url LIKE '%Schema_Evento_211110_NT2025.002%'`,
   );
+
+  const runFullPackageRepair = (
+    stmt: Database.Statement,
+    entry: DfeRepoEntry | undefined,
+  ): void => {
+    if (!entry) {
+      return;
+    }
+    stmt.run(
+      entry.basePackage,
+      entry.domainPackage,
+      entry.mapperPackage,
+      entry.tablePackage,
+      entry.parserPackage,
+      entry.utilPackage,
+    );
+  };
 
   return {
     rawDb,
@@ -276,9 +316,19 @@ function createDatabaseApi(rawDb: Database.Database): NtcDatabase {
     seedDefaultRepos: (entries) => {
       runRepoBatch(rawDb, seedStmt, entries);
       const gtveDefault = entries.find((e) => e.dfe === 'GTVe');
-      if (gtveDefault && gtveDefault.svrsRelativePath !== '/Gtve/Documentos') {
-        repairGtvePathStmt.run(gtveDefault.svrsRelativePath);
+      if (gtveDefault) {
+        if (gtveDefault.svrsRelativePath !== '/Gtve/Documentos') {
+          repairGtvePathStmt.run(gtveDefault.svrsRelativePath);
+        }
+        repairGtveUtilStmt.run(gtveDefault.utilPackage);
       }
+      const bpeDefault = entries.find((e) => e.dfe === 'BPe');
+      if (bpeDefault) {
+        repairBpeMapperStmt.run(bpeDefault.mapperPackage);
+        repairBpeUtilStmt.run(bpeDefault.utilPackage);
+      }
+      runFullPackageRepair(repairNfcomPackagesStmt, entries.find((e) => e.dfe === 'NFCom'));
+      runFullPackageRepair(repairNfcePackagesStmt, entries.find((e) => e.dfe === 'NFCe'));
       repairNfeEventSchemaStmt.run();
     },
     saveDfeRepo: (entry) => {

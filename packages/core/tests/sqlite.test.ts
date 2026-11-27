@@ -104,14 +104,56 @@ describe('Ciclo 2 — Armazenamento SQLite WAL e Migrações', () => {
     expect(reloadedNfe?.baseBranch).toBe('release/2.x');
     expect(reloadedNfe?.baselineNt).toBe('2026.001@v1.00');
 
-    // Simula banco preexistente com rota legada quebrada '/Gtve/Documentos' e valida reparo automático
+    // Simula banco preexistente com rota legada quebrada '/Gtve/Documentos' e pacotes antigos de BPe/NFCom/GTVe/NFCe
     const gtveEntry = repos.find((r) => r.dfe === 'GTVe');
-    if (!gtveEntry) {
-      throw new Error('GTVe ausente');
+    const bpeEntry = repos.find((r) => r.dfe === 'BPe');
+    const nfcomEntry = repos.find((r) => r.dfe === 'NFCom');
+    const nfceEntry = repos.find((r) => r.dfe === 'NFCe');
+    if (!gtveEntry || !bpeEntry || !nfcomEntry || !nfceEntry) {
+      throw new Error('GTVe/BPe/NFCom/NFCe ausentes');
     }
-    ntcDb.saveDfeRepo({ ...gtveEntry, svrsRelativePath: '/Gtve/Documentos' });
+    ntcDb.saveDfeRepo({
+      ...gtveEntry,
+      svrsRelativePath: '/Gtve/Documentos',
+      utilPackage: 'br.gov.mg.fazenda.gtveparser.util',
+    });
+    ntcDb.saveDfeRepo({
+      ...bpeEntry,
+      mapperPackage: 'br.gov.mg.fazenda.bpeparser.mapper',
+      utilPackage: 'br.gov.mg.fazenda.bpeparser.util',
+    });
+    ntcDb.saveDfeRepo({
+      ...nfcomEntry,
+      basePackage: 'br.gov.mg.fazenda.nfcomparser',
+      domainPackage: 'br.gov.mg.fazenda.nfcomparser.nfcom',
+      mapperPackage: 'br.gov.mg.fazenda.nfcomparser.mapper',
+      tablePackage: 'br.gov.mg.fazenda.nfcomparser.table',
+      parserPackage: 'br.gov.mg.fazenda.nfcomparser.parser',
+      utilPackage: 'br.gov.mg.fazenda.nfcomparser.util',
+    });
+    ntcDb.saveDfeRepo({
+      ...nfceEntry,
+      basePackage: 'br.gov.mg.fazenda.nfceparser',
+      domainPackage: 'br.gov.mg.fazenda.nfceparser.nfce',
+      mapperPackage: 'br.gov.mg.fazenda.nfceparser.mapper',
+      tablePackage: 'br.gov.mg.fazenda.nfceparser.table',
+      parserPackage: 'br.gov.mg.fazenda.nfceparser.parser',
+      utilPackage: 'br.gov.mg.fazenda.nfceparser.util',
+    });
     ntcDb.seedDefaultRepos(defaults);
     expect(ntcDb.getDfeRepo('GTVe')?.svrsRelativePath).toBe('/Cte/Documentos');
+    expect(ntcDb.getDfeRepo('GTVe')?.utilPackage).toBeNull();
+    expect(ntcDb.getDfeRepo('BPe')?.mapperPackage).toBe('br.gov.mg.fazenda.bpeparser.internal.mapper');
+    expect(ntcDb.getDfeRepo('BPe')?.utilPackage).toBe('br.gov.mg.fazenda.bpeparser.internal.util');
+    expect(ntcDb.getDfeRepo('NFCom')?.domainPackage).toBe('br.gov.mg.fazenda.nfcom.dto');
+    expect(ntcDb.getDfeRepo('NFCom')?.mapperPackage).toBe('br.gov.mg.fazenda.nfcom.mapper');
+    expect(ntcDb.getDfeRepo('NFCom')?.parserPackage).toBe('br.gov.mg.fazenda.parser');
+    expect(ntcDb.getDfeRepo('NFCe')?.basePackage).toBe('br.gov.mg.fazenda');
+    expect(ntcDb.getDfeRepo('NFCe')?.domainPackage).toBe('br.gov.mg.fazenda.nfce');
+    expect(ntcDb.getDfeRepo('NFCe')?.mapperPackage).toBe('br.gov.mg.fazenda.mapper');
+    expect(ntcDb.getDfeRepo('NFCe')?.tablePackage).toBe('br.gov.mg.fazenda.table');
+    expect(ntcDb.getDfeRepo('NFCe')?.parserPackage).toBe('br.gov.mg.fazenda.parser');
+    expect(ntcDb.getDfeRepo('NFCe')?.utilPackage).toBeNull();
   });
 
   it('SQ-05 e SQ-06 aplicam integridade FK e restrição CHECK de status no SQLite', async () => {

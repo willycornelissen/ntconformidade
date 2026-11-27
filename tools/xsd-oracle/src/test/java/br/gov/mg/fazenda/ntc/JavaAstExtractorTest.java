@@ -443,6 +443,64 @@ class JavaAstExtractorTest {
         assertEquals(2, assertThrows(OracleCliException.class, () -> extractor.extract(repo, badPkg)).getExitCode());
     }
 
+    @Test
+    void ast15ExtractsSwitchTagPathAndDirectEqualsMappersForBpeLayout(@TempDir Path repo) throws IOException {
+        writeJava(repo, "br.gov.mg.fazenda.bpeparser.bpe", "Bpe.java", ""
+                + "package br.gov.mg.fazenda.bpeparser.bpe;\n"
+                + "public class Bpe { private Integer cUf; private String chave_acesso; }\n");
+        writeJava(repo, "br.gov.mg.fazenda.bpeparser.internal.mapper", "BpeMapper.java", ""
+                + "package br.gov.mg.fazenda.bpeparser.internal.mapper;\n"
+                + "import br.gov.mg.fazenda.bpeparser.bpe.Bpe;\n"
+                + "public class BpeMapper {\n"
+                + "  static void map(XmlElement elem, Bpe bpe) {\n"
+                + "    switch (elem.getTagPath()) {\n"
+                + "      case \"BPEPROC.BPE.INFBPE.IDE.CUF\" -> bpe.setCUf(1);\n"
+                + "      case \"BPEPROC.BPE.INFBPE.ID\" -> { String x = elem.getValue(); bpe.setChave_acesso(x); }\n"
+                + "      default -> {}\n"
+                + "    }\n"
+                + "    switch (elem.getTagName()) {\n"
+                + "      case \"IGNORED\" -> bpe.setCUf(2);\n"
+                + "    }\n"
+                + "  }\n"
+                + "  static void mapRelative(XmlElement elem) {\n"
+                + "    if (!elem.getTagPath().equalsIgnoreCase(\"BPEPROC.BPE\")) return;\n"
+                + "    Bpe localBpe = new Bpe();\n"
+                + "    for (XmlElement child : XmlSearch.findAllFromAncestorByTagName(elem, \"IDE\")) {\n"
+                + "      switch (child.getTagPath()) {\n"
+                + "        case \"TPAMB\" -> localBpe.setCUf(1);\n"
+                + "      }\n"
+                + "    }\n"
+                + "  }\n"
+                + "}\n");
+        writeJava(repo, "br.gov.mg.fazenda.bpeparser.internal.mapper", "CompraGovMapper.java", ""
+                + "package br.gov.mg.fazenda.bpeparser.internal.mapper;\n"
+                + "public class CompraGovMapper {\n"
+                + "  static void read(XmlElement element) {\n"
+                + "    if (!element.getTagPath().equalsIgnoreCase(\"BPEPROC.BPE\")) return;\n"
+                + "    for (XmlElement elem : XmlSearch.findAllFromAncestorByTagName(element, \"REFDFEANT\")) {\n"
+                + "      if (\"BPEPROC.BPE.INFBPE.IDE.GCOMPRAGOV.REFDFEANT\".equals(elem.getTagPath())) { }\n"
+                + "      if (\"OTHER.TAG\".equals(elem.getTagPath())) { }\n"
+                + "      if (\"BPEPROC.BPE\".equals(elem.getTagPath())) { }\n"
+                + "    }\n"
+                + "  }\n"
+                + "}\n");
+
+        RegistryEntry bpe = new RegistryEntry();
+        bpe.setDfe("BPe");
+        bpe.setBasePackage("br.gov.mg.fazenda.bpeparser");
+        bpe.setDomainPackage("br.gov.mg.fazenda.bpeparser.bpe");
+        bpe.setMapperPackage("br.gov.mg.fazenda.bpeparser.internal.mapper");
+        bpe.setTablePackage("br.gov.mg.fazenda.bpeparser.table");
+        bpe.setParserPackage("br.gov.mg.fazenda.bpeparser.parser");
+        bpe.setUtilPackage("br.gov.mg.fazenda.bpeparser.internal.util");
+        bpe.setTagPrefix("BPEPROC");
+
+        ExtractJavaAstResult res = extractor.extract(repo, bpe);
+        assertSetter(res, "BPEPROC.BPE.INFBPE.IDE.CUF", "CUF", "BpeMapper", "cUf");
+        assertSetter(res, "BPEPROC.BPE.INFBPE.ID", "ID", "BpeMapper", "chave_acesso");
+        assertSetter(res, "BPEPROC.BPE.INFBPE.IDE.GCOMPRAGOV.REFDFEANT", "REFDFEANT", "CompraGovMapper", "refdfeant");
+    }
+
     private static RegistryEntry nfeRegistry() {
         RegistryEntry entry = new RegistryEntry();
         entry.setDfe("NFe");
