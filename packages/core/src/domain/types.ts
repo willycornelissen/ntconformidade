@@ -527,18 +527,44 @@ export const DoctorReportSchema = z.object({
 });
 export type DoctorReport = z.infer<typeof DoctorReportSchema>;
 
+export const CopilotModelLimitsSchema = z.object({
+  maxContextWindowTokens: z.number().int().positive().optional(),
+  maxPromptTokens: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+});
+export type CopilotModelLimits = z.infer<typeof CopilotModelLimitsSchema>;
+
 export const CopilotModelOptionSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   vendor: z.string().optional(),
   source: z.enum(['subscription', 'curated']),
+  limits: CopilotModelLimitsSchema.optional(),
 });
 export type CopilotModelOption = z.infer<typeof CopilotModelOptionSchema>;
+
+export const CopilotQuotaSnapshotSchema = z.object({
+  entitlement: z.number().nonnegative().optional(),
+  remaining: z.number().nonnegative().optional(),
+  percentRemaining: z.number().min(0).max(100).optional(),
+  unlimited: z.boolean().optional(),
+});
+export type CopilotQuotaSnapshot = z.infer<typeof CopilotQuotaSnapshotSchema>;
+
+export const CopilotQuotaInfoSchema = z.object({
+  plan: z.string().min(1).optional(),
+  quotaResetDate: z.string().min(1).optional(),
+  chat: CopilotQuotaSnapshotSchema.optional(),
+  premiumInteractions: CopilotQuotaSnapshotSchema.optional(),
+  completions: CopilotQuotaSnapshotSchema.optional(),
+});
+export type CopilotQuotaInfo = z.infer<typeof CopilotQuotaInfoSchema>;
 
 export const ListCopilotModelsResultSchema = z.object({
   models: z.array(CopilotModelOptionSchema).min(1),
   source: z.enum(['subscription', 'curated']),
   warning: z.string().nullable(),
+  quota: CopilotQuotaInfoSchema.nullable().optional(),
 });
 export type ListCopilotModelsResult = z.infer<typeof ListCopilotModelsResultSchema>;
 

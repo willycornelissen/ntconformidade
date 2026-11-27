@@ -1004,4 +1004,93 @@ describe('BYOK LLM Gateway & Provider Adapters', () => {
     expect(fallback.warning).toMatch(/403/);
     expect(fallback.warning).not.toContain('ghu_copilot_oauth_secret');
   });
+
+  it('LG-14: extracts model token limits and Copilot account quota snapshots when includeQuota is enabled', async () => {
+    const store = makeSecretStore({ 'ntc:llm:github-copilot': 'ghu_quota_secret' });
+    const fetchFn: FetchFn = async (url) => {
+      if (url === 'https://api.github.com/copilot_internal/v2/token') {
+        return new Response(
+          JSON.stringify({
+            token: 'tid=copilot_sess_quota;exp=9999999999',
+            expires_at: Math.floor(Date.now() / 1000) + 1800,
+            endpoints: { api: 'https://api.githubcopilot.com' },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://api.githubcopilot.com/models') {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: 'gpt-4.1',
+                name: 'GPT-4.1',
+                vendor: 'OpenAI',
+                model_picker_enabled: true,
+                capabilities: {
+                  type: 'chat',
+                  limits: {
+                    max_context_window_tokens: 128000,
+                    max_prompt_tokens: 111616,
+                    max_output_tokens: 16384,
+                  },
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://api.github.com/copilot_internal/user') {
+        return new Response(
+          JSON.stringify({
+            copilot_plan: 'individual',
+            quota_reset_date_utc: '2026-12-01T00:00:00Z',
+            quota_snapshots: {
+              chat: { unlimited: true, entitlement: null, remaining: null },
+              premium_interactions: {
+                entitlement: 300,
+                remaining: 240,
+                percent_remaining: 80,
+                unlimited: false,
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const res = await listAvailableCopilotModels({
+      secretStore: store,
+      includeQuota: true,
+      fetchFn,
+    });
+    expect(res.source).toBe('subscription');
+    expect(res.models).toEqual([
+      {
+        id: 'gpt-4.1',
+        name: 'GPT-4.1',
+        vendor: 'OpenAI',
+        source: 'subscription',
+        limits: {
+          maxContextWindowTokens: 128000,
+          maxPromptTokens: 111616,
+          maxOutputTokens: 16384,
+        },
+      },
+    ]);
+    expect(res.quota).toEqual({
+      plan: 'individual',
+      quotaResetDate: '2026-12-01T00:00:00Z',
+      chat: { unlimited: true },
+      premiumInteractions: {
+        entitlement: 300,
+        remaining: 240,
+        percentRemaining: 80,
+        unlimited: false,
+      },
+    });
+  });
 });

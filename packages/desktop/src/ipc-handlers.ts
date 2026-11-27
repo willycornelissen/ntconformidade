@@ -638,6 +638,7 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
         secretStore: deps.secretStore,
         endpointUrl: req?.endpointUrl,
         enterpriseSlug: req?.enterpriseSlug,
+        includeQuota: true,
         fetchFn: deps.fetchFn ?? fetch,
       });
       return ListCopilotModelsResponseSchema.parse(result);

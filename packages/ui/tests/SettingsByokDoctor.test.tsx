@@ -152,6 +152,7 @@ describe('SettingsByokDoctor', () => {
         operatorName: 'Willy',
       }),
     );
+    expect(screen.getByLabelText(/Capacidade de tokens disponíveis/i)).toBeInTheDocument();
   });
 
   it('UI-SD-03: completes Copilot OAuth Device login, refreshes subscription models, and runs Copilot & Gitea connection tests', async () => {

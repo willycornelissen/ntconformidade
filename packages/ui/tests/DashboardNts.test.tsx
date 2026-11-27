@@ -218,7 +218,7 @@ describe('DashboardNts (CUJ 1)', () => {
     expect(onDraftReady).toHaveBeenCalledWith('run-new-1', '/tmp/cache/xsd');
   });
 
-  it('UI-DN-04: renders the DFe logo and summary metrics on the home screen without the Execuções Recentes table', async () => {
+  it('UI-DN-04: renders the DFe logo on the home screen without summary stat boxes or the Execuções Recentes table', async () => {
     const baseRun = {
       dfe: 'NFe' as const,
       ntId: 'NFe:2025.002:1.30',
@@ -255,6 +255,9 @@ describe('DashboardNts (CUJ 1)', () => {
     expect(
       await screen.findByRole('img', { name: /DFe — Documento Fiscal Eletrônico/i }),
     ).toBeInTheDocument();
+    expect(screen.queryByText('Documentos DF-e')).not.toBeInTheDocument();
+    expect(screen.queryByText('NTs em cache')).not.toBeInTheDocument();
+    expect(screen.queryByText('NTs verificadas')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /Execuções Recentes/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Abrir$/i })).not.toBeInTheDocument();
     const nfeCard = screen.getByRole('button', { name: /^NFe\b/i });

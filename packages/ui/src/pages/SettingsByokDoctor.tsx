@@ -4,15 +4,19 @@ import type {
   ConnectionTestResult,
   CopilotAuthStartResponse,
   CopilotModelOption,
+  CopilotQuotaInfo,
   DfeRepoEntry,
   DoctorReport,
+  ListCopilotModelsResult,
   NtcDesktopApi,
 } from '@ntc/core';
 import {
   COPILOT_BYOK_SECRET_KEYS,
   CURATED_COPILOT_MODELS,
   type CopilotByokConfig,
+  buildByokTokenAvailability,
   extractUrlOrigin,
+  formatTokenCountExact,
   isSafeEndpointInput,
   isSafeHttpsUrlInput,
   normalizeCopilotByokConfig,
@@ -24,6 +28,10 @@ export interface SettingsByokDoctorProps {
   readonly api: NtcDesktopApi;
   readonly byokConfig: ByokConfig;
   readonly onChangeConfig: (next: ByokConfig) => void;
+  readonly onCopilotStateChange?: (state: {
+    readonly isConnected?: boolean;
+    readonly modelsResult?: ListCopilotModelsResult | null;
+  }) => void;
   readonly onGoHome?: () => void;
 }
 
@@ -72,6 +80,7 @@ function CopilotByokSection({
   modelOptions,
   modelsSource,
   modelsWarning,
+  copilotQuota,
   copilotSession,
   copilotTestResult,
   busy,
@@ -88,6 +97,7 @@ function CopilotByokSection({
   readonly modelOptions: readonly CopilotModelOption[];
   readonly modelsSource: 'subscription' | 'curated';
   readonly modelsWarning: string | null;
+  readonly copilotQuota: CopilotQuotaInfo | null;
   readonly copilotSession: CopilotAuthStartResponse | null;
   readonly copilotTestResult: ConnectionTestResult | null;
   readonly busy: boolean;
@@ -108,6 +118,21 @@ function CopilotByokSection({
       ...modelOptions,
     ];
   }, [config.modelId, modelOptions]);
+
+  const tokenSummary = useMemo(
+    () =>
+      buildByokTokenAvailability(
+        config,
+        {
+          models: [...effectiveModelOptions],
+          source: modelsSource,
+          warning: modelsWarning,
+          quota: copilotQuota,
+        },
+        isCopilotConnected,
+      ),
+    [config, copilotQuota, effectiveModelOptions, isCopilotConnected, modelsSource, modelsWarning],
+  );
 
   return (
     <div className="card" style={{ marginBottom: '1rem' }}>
@@ -201,6 +226,39 @@ function CopilotByokSection({
             }}
           />
         </div>
+      </div>
+
+      <div className="home-stats" style={{ marginTop: '0.75rem' }} aria-label="Capacidade de tokens disponíveis">
+        <div className="home-stat">
+          <span className="home-stat-value">
+            {tokenSummary.effectiveAvailableTokens !== null
+              ? `${formatTokenCountExact(tokenSummary.effectiveAvailableTokens)} tokens`
+              : 'Não informado'}
+          </span>
+          <span className="home-stat-label">Disponível p/ operação (prompt)</span>
+        </div>
+        {tokenSummary.maxContextWindowTokens !== null && (
+          <div className="home-stat">
+            <span className="home-stat-value">
+              {formatTokenCountExact(tokenSummary.maxContextWindowTokens)}
+            </span>
+            <span className="home-stat-label">Janela de contexto</span>
+          </div>
+        )}
+        {tokenSummary.maxOutputTokens !== null && (
+          <div className="home-stat">
+            <span className="home-stat-value">
+              {formatTokenCountExact(tokenSummary.maxOutputTokens)}
+            </span>
+            <span className="home-stat-label">Saída máx.</span>
+          </div>
+        )}
+        {tokenSummary.quotaSummaryText && (
+          <div className="home-stat">
+            <span className="home-stat-value">{tokenSummary.quotaSummaryText}</span>
+            <span className="home-stat-label">Cota da assinatura</span>
+          </div>
+        )}
       </div>
 
       {modelsWarning && (
@@ -489,6 +547,7 @@ export function SettingsByokDoctor({
   api,
   byokConfig,
   onChangeConfig,
+  onCopilotStateChange,
   onGoHome,
 }: SettingsByokDoctorProps) {
   const normalizedConfig = useMemo(() => normalizeCopilotByokConfig(byokConfig), [byokConfig]);
@@ -497,6 +556,7 @@ export function SettingsByokDoctor({
   const [modelOptions, setModelOptions] = useState<readonly CopilotModelOption[]>(CURATED_COPILOT_MODELS);
   const [modelsSource, setModelsSource] = useState<'subscription' | 'curated'>('curated');
   const [modelsWarning, setModelsWarning] = useState<string | null>(null);
+  const [copilotQuota, setCopilotQuota] = useState<CopilotQuotaInfo | null>(null);
   const [repos, setRepos] = useState<readonly DfeRepoEntry[]>([]);
   const [giteaBaseUrl, setGiteaBaseUrl] = useState(
     normalizedConfig.giteaBaseUrl ?? DEFAULT_GITEA_BASE_URL,
@@ -536,24 +596,29 @@ export function SettingsByokDoctor({
       ),
     );
     if (isMountedRef.current && seq === statusSeqRef.current) {
-      setSecretStatus(Object.fromEntries(entries));
+      const next = Object.fromEntries(entries);
+      setSecretStatus(next);
+      onCopilotStateChange?.({ isConnected: Boolean(next['ntc:llm:github-copilot']) });
     }
-  }, [api]);
+  }, [api, onCopilotStateChange]);
 
   const loadCopilotModels = useCallback(
-    async (cfg: CopilotByokConfig) => {
+    async (cfg: CopilotByokConfig): Promise<ListCopilotModelsResult | null> => {
       const res = await api.listCopilotModels({
         ...(cfg.endpointUrl ? { endpointUrl: cfg.endpointUrl } : {}),
         ...(cfg.enterpriseSlug ? { enterpriseSlug: cfg.enterpriseSlug } : {}),
       });
       if (!isMountedRef.current) {
-        return;
+        return null;
       }
       setModelOptions(res.models);
       setModelsSource(res.source);
       setModelsWarning(res.warning);
+      setCopilotQuota(res.quota ?? null);
+      onCopilotStateChange?.({ modelsResult: res });
+      return res;
     },
-    [api],
+    [api, onCopilotStateChange],
   );
 
   useEffect(() => {
@@ -706,14 +771,8 @@ export function SettingsByokDoctor({
     }
     setBusy(true);
     try {
-      const res = await api.listCopilotModels({
-        ...(normalizedConfig.endpointUrl ? { endpointUrl: normalizedConfig.endpointUrl } : {}),
-        ...(normalizedConfig.enterpriseSlug ? { enterpriseSlug: normalizedConfig.enterpriseSlug } : {}),
-      });
-      if (isMountedRef.current) {
-        setModelOptions(res.models);
-        setModelsSource(res.source);
-        setModelsWarning(res.warning);
+      const res = await loadCopilotModels(normalizedConfig);
+      if (isMountedRef.current && res) {
         setStatusMessage(
           res.source === 'subscription'
             ? `${res.models.length} modelos carregados da sua assinatura GitHub Copilot.`
@@ -966,6 +1025,7 @@ export function SettingsByokDoctor({
         modelOptions={modelOptions}
         modelsSource={modelsSource}
         modelsWarning={modelsWarning}
+        copilotQuota={copilotQuota}
         copilotSession={copilotSession}
         copilotTestResult={copilotTestResult}
         busy={busy}

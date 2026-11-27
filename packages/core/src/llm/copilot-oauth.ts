@@ -2,7 +2,10 @@ import { z } from 'zod';
 import {
   HttpsUrlSchema,
   llmSecretKey,
+  type CopilotModelLimits,
   type CopilotModelOption,
+  type CopilotQuotaInfo,
+  type CopilotQuotaSnapshot,
   type ListCopilotModelsResult,
 } from '../domain/types.js';
 import { isAllowedByokUrl } from '../domain/validators.js';
@@ -20,6 +23,7 @@ export const COPILOT_OAUTH_CLIENT_ID = 'Iv1.b507a08c87ecfe98';
 const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code';
 const GITHUB_OAUTH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const COPILOT_INTERNAL_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
+const COPILOT_INTERNAL_USER_URL = 'https://api.github.com/copilot_internal/user';
 const DEFAULT_COPILOT_API_ORIGIN = 'https://api.githubcopilot.com';
 
 export const COPILOT_CLIENT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -36,15 +40,69 @@ export const COPILOT_CHAT_HEADERS: Readonly<Record<string, string>> = Object.fre
 
 /** Curated GitHub Copilot subscription models shown as baseline/offline fallback. */
 export const CURATED_COPILOT_MODELS: readonly CopilotModelOption[] = Object.freeze([
-  { id: 'gpt-4.1', name: 'GPT-4.1 (Copilot Base)', vendor: 'OpenAI', source: 'curated' },
-  { id: 'gpt-4o', name: 'GPT-4o', vendor: 'OpenAI', source: 'curated' },
-  { id: 'gpt-5', name: 'GPT-5', vendor: 'OpenAI', source: 'curated' },
-  { id: 'gpt-5-mini', name: 'GPT-5 mini', vendor: 'OpenAI', source: 'curated' },
-  { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', vendor: 'Anthropic', source: 'curated' },
-  { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', vendor: 'Anthropic', source: 'curated' },
-  { id: 'claude-3.7-sonnet', name: 'Claude 3.7 Sonnet', vendor: 'Anthropic', source: 'curated' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Copilot)', vendor: 'Google', source: 'curated' },
-  { id: 'o4-mini', name: 'o4-mini', vendor: 'OpenAI', source: 'curated' },
+  {
+    id: 'gpt-4.1',
+    name: 'GPT-4.1 (Copilot Base)',
+    vendor: 'OpenAI',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 128000, maxPromptTokens: 111616, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    vendor: 'OpenAI',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 128000, maxPromptTokens: 111616, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'gpt-5',
+    name: 'GPT-5',
+    vendor: 'OpenAI',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'gpt-5-mini',
+    name: 'GPT-5 mini',
+    vendor: 'OpenAI',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'claude-sonnet-4',
+    name: 'Claude Sonnet 4',
+    vendor: 'Anthropic',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'claude-sonnet-4.5',
+    name: 'Claude Sonnet 4.5',
+    vendor: 'Anthropic',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'claude-3.7-sonnet',
+    name: 'Claude 3.7 Sonnet',
+    vendor: 'Anthropic',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro (Copilot)',
+    vendor: 'Google',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 1000000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
+  {
+    id: 'o4-mini',
+    name: 'o4-mini',
+    vendor: 'OpenAI',
+    source: 'curated',
+    limits: { maxContextWindowTokens: 200000, maxPromptTokens: 128000, maxOutputTokens: 16384 },
+  },
 ]);
 
 const DeviceCodeResponseSchema = z.object({
@@ -205,36 +263,100 @@ export async function exchangeCopilotSessionToken(
   };
 }
 
-const CopilotModelsPayloadSchema = z.union([
-  z.object({
-    data: z.array(
-      z.object({
-        id: z.string().min(1),
-        name: z.string().optional(),
-        vendor: z.string().optional(),
-        model_picker_enabled: z.boolean().optional(),
-        capabilities: z
-          .object({
-            type: z.string().optional(),
-          })
-          .optional(),
-      }),
-    ),
-  }),
-  z.array(
-    z.object({
-      id: z.string().min(1),
-      name: z.string().optional(),
-      vendor: z.string().optional(),
-      model_picker_enabled: z.boolean().optional(),
-      capabilities: z
+const CopilotModelEntrySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  vendor: z.string().optional(),
+  model_picker_enabled: z.boolean().optional(),
+  capabilities: z
+    .object({
+      type: z.string().optional(),
+      limits: z
         .object({
-          type: z.string().optional(),
+          max_context_window_tokens: z.number().int().positive().optional(),
+          max_prompt_tokens: z.number().int().positive().optional(),
+          max_output_tokens: z.number().int().positive().optional(),
         })
         .optional(),
-    }),
-  ),
+    })
+    .optional(),
+});
+
+const CopilotModelsPayloadSchema = z.union([
+  z.object({ data: z.array(CopilotModelEntrySchema) }),
+  z.array(CopilotModelEntrySchema),
 ]);
+
+const RawCopilotQuotaSnapshotSchema = z.object({
+  entitlement: z.number().nonnegative().nullish(),
+  remaining: z.number().nonnegative().nullish(),
+  percent_remaining: z.number().nullish(),
+  unlimited: z.boolean().nullish(),
+});
+
+const CopilotUserQuotaPayloadSchema = z.object({
+  copilot_plan: z.string().nullish(),
+  quota_reset_date: z.string().nullish(),
+  quota_reset_date_utc: z.string().nullish(),
+  quota_snapshots: z
+    .object({
+      chat: RawCopilotQuotaSnapshotSchema.nullish(),
+      premium_interactions: RawCopilotQuotaSnapshotSchema.nullish(),
+      completions: RawCopilotQuotaSnapshotSchema.nullish(),
+    })
+    .nullish(),
+});
+
+function extractModelLimits(
+  rawLimits?: z.infer<typeof CopilotModelEntrySchema>['capabilities'],
+): CopilotModelLimits | undefined {
+  const limits = rawLimits?.limits;
+  if (!limits) {
+    return undefined;
+  }
+  const out: {
+    maxContextWindowTokens?: number;
+    maxPromptTokens?: number;
+    maxOutputTokens?: number;
+  } = {};
+  if (limits.max_context_window_tokens !== undefined) {
+    out.maxContextWindowTokens = limits.max_context_window_tokens;
+  }
+  if (limits.max_prompt_tokens !== undefined) {
+    out.maxPromptTokens = limits.max_prompt_tokens;
+  }
+  if (limits.max_output_tokens !== undefined) {
+    out.maxOutputTokens = limits.max_output_tokens;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeQuotaSnapshot(
+  raw?: z.infer<typeof RawCopilotQuotaSnapshotSchema> | null,
+): CopilotQuotaSnapshot | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const snapshot: {
+    entitlement?: number;
+    remaining?: number;
+    percentRemaining?: number;
+    unlimited?: boolean;
+  } = {};
+  if (raw.entitlement !== undefined && raw.entitlement !== null) {
+    snapshot.entitlement = raw.entitlement;
+  }
+  if (raw.remaining !== undefined && raw.remaining !== null) {
+    snapshot.remaining = raw.remaining;
+  }
+  if (raw.percent_remaining !== undefined && raw.percent_remaining !== null) {
+    snapshot.percentRemaining = Math.max(0, Math.min(100, raw.percent_remaining));
+  }
+  if (raw.unlimited !== undefined && raw.unlimited !== null) {
+    snapshot.unlimited = raw.unlimited;
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
 
 /** Resolves the `/models` endpoint URL from an optional Copilot base URL or session origin. */
 export function resolveCopilotModelsUrl(endpointUrl?: string, sessionApiOrigin?: string): string {
@@ -246,6 +368,53 @@ export function resolveCopilotModelsUrl(endpointUrl?: string, sessionApiOrigin?:
   const trimmedPath = parsed.pathname.replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
   parsed.pathname = trimmedPath.endsWith('/models') ? trimmedPath : `${trimmedPath}/models`;
   return parsed.toString();
+}
+
+/** Fetches GitHub Copilot account quota snapshots from `/copilot_internal/user` when available. */
+export async function fetchCopilotUserQuota(options: {
+  readonly oauthToken: string;
+  readonly fetchFn?: FetchFn;
+}): Promise<CopilotQuotaInfo | null> {
+  const trimmed = options.oauthToken.trim();
+  if (!trimmed || !requiresCopilotSessionExchange(trimmed)) {
+    return null;
+  }
+  try {
+    const raw = await getJsonWithManualRedirects({
+      url: COPILOT_INTERNAL_USER_URL,
+      headers: {
+        Authorization: `token ${trimmed}`,
+        Accept: 'application/json',
+        ...COPILOT_CLIENT_HEADERS,
+      },
+      allowLoopbackHttp: false,
+      secretToRedact: trimmed,
+      fetchFn: options.fetchFn,
+    });
+    const parsed = CopilotUserQuotaPayloadSchema.safeParse(raw);
+    if (!parsed.success) {
+      return null;
+    }
+    const data = parsed.data;
+    const chat = normalizeQuotaSnapshot(data.quota_snapshots?.chat);
+    const premiumInteractions = normalizeQuotaSnapshot(data.quota_snapshots?.premium_interactions);
+    const completions = normalizeQuotaSnapshot(data.quota_snapshots?.completions);
+    const quotaResetDate = data.quota_reset_date_utc?.trim() || data.quota_reset_date?.trim() || undefined;
+    const plan = data.copilot_plan?.trim() || undefined;
+
+    if (!plan && !quotaResetDate && !chat && !premiumInteractions && !completions) {
+      return null;
+    }
+    return {
+      ...(plan ? { plan } : {}),
+      ...(quotaResetDate ? { quotaResetDate } : {}),
+      ...(chat ? { chat } : {}),
+      ...(premiumInteractions ? { premiumInteractions } : {}),
+      ...(completions ? { completions } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Fetches models enabled on the authenticated user's GitHub Copilot subscription. */
@@ -302,11 +471,13 @@ export async function fetchCopilotSubscriptionModels(options: {
       continue;
     }
     seenIds.add(item.id);
+    const limits = extractModelLimits(item.capabilities);
     models.push({
       id: item.id,
       name: item.name?.trim() ? item.name.trim() : item.id,
       ...(item.vendor?.trim() ? { vendor: item.vendor.trim() } : {}),
       source: 'subscription',
+      ...(limits ? { limits } : {}),
     });
   }
 
@@ -324,6 +495,7 @@ export async function listAvailableCopilotModels(options: {
   readonly secretStore: SecretStorePort;
   readonly endpointUrl?: string;
   readonly enterpriseSlug?: string;
+  readonly includeQuota?: boolean;
   readonly fetchFn?: FetchFn;
 }): Promise<ListCopilotModelsResult> {
   const secret = await options.secretStore.getSecret(llmSecretKey('github-copilot'));
@@ -332,26 +504,37 @@ export async function listAvailableCopilotModels(options: {
       models: [...CURATED_COPILOT_MODELS],
       source: 'curated',
       warning: null,
+      ...(options.includeQuota ? { quota: null } : {}),
     };
   }
+  const quotaPromise = options.includeQuota
+    ? fetchCopilotUserQuota({ oauthToken: secret, fetchFn: options.fetchFn })
+    : Promise.resolve(undefined);
+
   try {
-    const res = await fetchCopilotSubscriptionModels({
-      secret,
-      endpointUrl: options.endpointUrl,
-      enterpriseSlug: options.enterpriseSlug,
-      fetchFn: options.fetchFn,
-    });
+    const [res, quota] = await Promise.all([
+      fetchCopilotSubscriptionModels({
+        secret,
+        endpointUrl: options.endpointUrl,
+        enterpriseSlug: options.enterpriseSlug,
+        fetchFn: options.fetchFn,
+      }),
+      quotaPromise,
+    ]);
     return {
       models: [...res.models],
       source: 'subscription',
       warning: null,
+      ...(quota !== undefined ? { quota } : {}),
     };
   } catch (error) {
     const msg = scrubSecret(error instanceof Error ? error.message : String(error), secret.trim());
+    const quota = await quotaPromise;
     return {
       models: [...CURATED_COPILOT_MODELS],
       source: 'curated',
       warning: msg,
+      ...(quota !== undefined ? { quota } : {}),
     };
   }
 }

@@ -514,4 +514,53 @@ describe('App Shell & Typed IPC Client', () => {
     ).toBeInTheDocument();
     expect(checkCompliance).not.toHaveBeenCalled();
   });
+
+  it('UI-08: displays available LLM token capacity and Copilot quota on the BYOK navigation button', async () => {
+    const api = makeMockApi({
+      getByokConfig: vi.fn(async () => ({
+        provider: 'github-copilot' as const,
+        modelId: 'gpt-4.1',
+        operatorName: 'Willy',
+        secretKeyRef: 'ntc:llm:github-copilot' as const,
+        authMode: 'copilot-oauth-device' as const,
+      })),
+      getSecretStatus: vi.fn(async ({ key }) => ({
+        configured: key === 'ntc:llm:github-copilot',
+      })),
+      listCopilotModels: vi.fn(async () => ({
+        models: [
+          {
+            id: 'gpt-4.1',
+            name: 'GPT-4.1',
+            vendor: 'OpenAI',
+            source: 'subscription' as const,
+            limits: {
+              maxContextWindowTokens: 128000,
+              maxPromptTokens: 111616,
+              maxOutputTokens: 16384,
+            },
+          },
+        ],
+        source: 'subscription' as const,
+        warning: null,
+        quota: {
+          plan: 'individual',
+          premiumInteractions: {
+            entitlement: 300,
+            remaining: 240,
+            percentRemaining: 80,
+            unlimited: false,
+          },
+        },
+      })),
+    });
+
+    render(<App api={api} />);
+
+    const byokButton = await screen.findByRole('button', { name: /BYOK & Doctor/i });
+    expect(await screen.findByText('111,6k tok · 240/300')).toBeInTheDocument();
+    expect(byokButton).toHaveAttribute('title', expect.stringContaining('111.616'));
+    expect(byokButton).toHaveAttribute('title', expect.stringContaining('128.000'));
+    expect(byokButton).toHaveAttribute('title', expect.stringContaining('240/300'));
+  });
 });

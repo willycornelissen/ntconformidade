@@ -518,7 +518,6 @@ export function DashboardNts({
   }
 
   const syncErrors = syncResults.filter((r) => r.error !== null);
-  const verifiedNtCount = entries.filter((entry) => ncRunByNtId.has(entry.id)).length;
 
   const toolbarBlock = (
     <div className="home-toolbar">
@@ -654,20 +653,6 @@ export function DashboardNts({
             Selecione um documento fiscal para consultar Notas Técnicas, verificar conformidade com os
             parsers e revisar Notas de Conformidade.
           </p>
-          <div className="home-stats">
-            <div className="home-stat">
-              <span className="home-stat-value">{ALL_DFES.length}</span>
-              <span className="home-stat-label">Documentos DF-e</span>
-            </div>
-            <div className="home-stat">
-              <span className="home-stat-value">{entries.length}</span>
-              <span className="home-stat-label">NTs em cache</span>
-            </div>
-            <div className="home-stat">
-              <span className="home-stat-value">{verifiedNtCount}</span>
-              <span className="home-stat-label">NTs verificadas</span>
-            </div>
-          </div>
         </div>
       </section>
 
