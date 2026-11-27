@@ -448,7 +448,7 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
         giteaUrl: req?.giteaUrl,
         sampleRepoDir: safeSampleRepoDir,
         byokConfig: req?.byokConfig,
-        fetchFn: deps.fetchFn,
+        fetchFn: deps.fetchFn ?? fetch,
       });
       return DoctorReportIpcSchema.parse(report);
     },
@@ -528,7 +528,21 @@ export function createDesktopIpcController(deps: DesktopIpcControllerDeps): {
       if (activeApplyRuns.has(req.runId)) {
         throw new Error(`Execução '${req.runId}' já está aplicando NC em andamento`);
       }
-      const safeXsdDir = await resolvePathWithinAllowedRoots(req.xsdDir, allowedXsdRoots, 'xsdDir');
+      let safeXsdDir: string;
+      if (req.xsdDir === 'N/A') {
+        const run = deps.db.getComplianceRun(req.runId);
+        if (!run?.ncJsonPath) {
+          throw new Error('Caminho para xsdDir fora dos diretórios permitidos');
+        }
+        const ncAbsPath = await resolveContainedNoSymlinkPath(path.join(deps.dataDir, 'ncs'), run.ncJsonPath);
+        const nc = await loadNcDocument(ncAbsPath);
+        if (!nc.no_structural_gaps) {
+          throw new Error('Caminho para xsdDir fora dos diretórios permitidos');
+        }
+        safeXsdDir = 'N/A';
+      } else {
+        safeXsdDir = await resolvePathWithinAllowedRoots(req.xsdDir, allowedXsdRoots, 'xsdDir');
+      }
       activeApplyRuns.add(req.runId);
       try {
         const outcome = await orchestrator.approveAndRunCompliance({

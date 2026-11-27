@@ -271,18 +271,20 @@ export class ComplianceOrchestrator {
     let lockHeld = false;
 
     try {
-      if (!input.xsdDir.trim()) {
-        throw new OrchestratorStepError('PATCH_GUARDRAILS', 'Diretório XSD obrigatório não informado');
-      }
       const nc = await this.loadValidatedNcForRun(run);
-      activeStep = 'STALENESS_CHECK';
-      await this.verifyReadinessBeforeLock(run, repo, nc, input.currentPdfSha256);
-
       if (nc.no_structural_gaps && nc.confirmed_no_gaps === true) {
+        activeStep = 'STALENESS_CHECK';
+        await this.verifyReadinessBeforeLock(run, repo, nc, input.currentPdfSha256);
         run = this.opts.db.transitionComplianceRunStatus({ runId: run.runId, nextStatus: 'APPROVED' });
         run = this.opts.db.transitionComplianceRunStatus({ runId: run.runId, nextStatus: 'TESTED' });
         return { run, patchFilePath: null, prUrl: null, mavenResult: null };
       }
+
+      if (!input.xsdDir.trim()) {
+        throw new OrchestratorStepError('PATCH_GUARDRAILS', 'Diretório XSD obrigatório não informado');
+      }
+      activeStep = 'STALENESS_CHECK';
+      await this.verifyReadinessBeforeLock(run, repo, nc, input.currentPdfSha256);
 
       activeStep = 'WORKTREE_PREP';
       this.opts.db.acquireRepoLock(repo.dfe, run.runId);
@@ -324,15 +326,17 @@ export class ComplianceOrchestrator {
     const downloaded = await downloadNtArtifacts(nt, this.opts.cacheRootDir, {
       fetchFn: this.opts.fetchFn,
     });
-    if (!downloaded.pdfPath || !downloaded.xsdDir) {
+    if (!downloaded.pdfPath) {
       throw new OrchestratorStepError(
         'SVRS_SYNC',
-        `Artefatos PDF/XSD ausentes para '${nt.id}'. Utilize importação manual offline.`,
+        `Artefato PDF ausente para '${nt.id}'. Utilize importação manual offline.`,
       );
     }
     this.emitProgress(run, 'PDF_EXTRACT', `Extraindo PDF ${nt.ntNumber}`);
-    const pdf = await extractNtPdf(downloaded.pdfPath);
-    return { pdf, xsdDir: downloaded.xsdDir };
+    const pdf = await extractNtPdf(downloaded.pdfPath, {
+      cacheDir: path.join(this.opts.cacheRootDir, 'svrs', nt.dfe),
+    });
+    return { pdf, xsdDir: downloaded.xsdDir ?? '' };
   }
 
   private async prepareInspectionWorktree(bareMirror: string, sha: string, dir: string, runId: string): Promise<void> {
@@ -360,13 +364,16 @@ export class ComplianceOrchestrator {
     try {
       this.emitProgress(params.run, 'ORACLE_DIFF', 'Executando oracle determinístico XSD × AST');
       const regEntry = toOracleRegistryEntry(params.repo);
+      const hasXsdDir = params.xsdDir.trim().length > 0;
       const [xsd, ast, fieldTypes] = await Promise.all([
-        this.opts.oracle.extractXsd(params.xsdDir),
+        hasXsdDir ? this.opts.oracle.extractXsd(params.xsdDir) : Promise.resolve(null),
         this.opts.oracle.extractJavaAst(inspectDir, regEntry),
-        extractJavaFieldTypeHints(inspectDir, params.repo.domainPackage),
+        hasXsdDir ? extractJavaFieldTypeHints(inspectDir, params.repo.domainPackage) : Promise.resolve(undefined),
       ]);
 
-      const diffFindings = computeXsdAstDiff({ xsd, ast, registryEntry: regEntry, fieldTypes });
+      const diffFindings = xsd
+        ? computeXsdAstDiff({ xsd, ast, registryEntry: regEntry, fieldTypes })
+        : [];
       const classHints = deriveAffectedClassHints(diffFindings, ast);
       const javaContextFiles = await extractAllowedJavaContextForNc(inspectDir, params.repo, undefined, 25, classHints);
 

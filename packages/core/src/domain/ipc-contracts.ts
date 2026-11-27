@@ -229,7 +229,7 @@ export const ImportManualNtResponseSchema = z.object({
 export const CheckComplianceResponseSchema = z.object({
   run: ComplianceRunSchema,
   nc: NcDocumentSchema,
-  xsdDir: z.string().min(1),
+  xsdDir: z.string(),
 });
 
 export const NcLoadedViewSchema = z.object({

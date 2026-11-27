@@ -230,6 +230,60 @@ async function probeEndpointIfConfigured(
   }
 }
 
+async function probeGiteaPat(
+  fetchFn: FetchFn | undefined,
+  origin: string,
+  pat: string,
+): Promise<{ readonly status: 'OK' | 'WARN' | 'ERROR'; readonly summary: string; readonly details: string | null }> {
+  if (!fetchFn) {
+    return { status: 'OK', summary: 'Gitea HTTPS válido e PAT configurado', details: null };
+  }
+  if (!pat) {
+    const probeErr = await probeEndpointIfConfigured(fetchFn, `${origin}/api/v1/version`, {});
+    return {
+      status: probeErr ? 'WARN' : 'OK',
+      summary: probeErr ? `Gitea inacessível (${probeErr})` : 'Gitea HTTPS válido e PAT configurado',
+      details: probeErr,
+    };
+  }
+  try {
+    const res = await fetchFn(`${origin}/api/v1/user`, {
+      method: 'GET',
+      headers: { Authorization: `token ${pat}`, Accept: 'application/json' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5_000),
+    });
+    await res.body?.cancel().catch(() => undefined);
+    if (res.ok) {
+      return { status: 'OK', summary: 'Gitea HTTPS válido e PAT autenticado', details: null };
+    }
+    if (res.status === 401) {
+      return {
+        status: 'ERROR',
+        summary: 'Token Gitea PAT inválido ou expirado (HTTP 401)',
+        details: 'Gere um novo PAT no Gitea (Settings > Applications) com escopos de repositório e salve-o novamente.',
+      };
+    }
+    if (res.status === 403) {
+      return {
+        status: 'ERROR',
+        summary: 'Token Gitea PAT sem permissão suficiente (HTTP 403)',
+        details: 'Verifique se o PAT inclui escopos read:repository / write:repository e read:user.',
+      };
+    }
+    return {
+      status: 'WARN',
+      summary: `Gitea retornou HTTP ${res.status} ao validar PAT`,
+      details: `HTTP ${res.status}`,
+    };
+  } catch (error) {
+    const msg = sanitizeLogMessage(error instanceof Error ? error.message : String(error))
+      .split(pat)
+      .join('[REDACTED]');
+    return { status: 'WARN', summary: `Gitea inacessível (${msg})`, details: msg };
+  }
+}
+
 async function checkGiteaReadiness(
   giteaUrl: string | undefined,
   secretStore: SecretStorePort | undefined,
@@ -245,12 +299,14 @@ async function checkGiteaReadiness(
   if (!hasPat) {
     return { id: 'GITEA_API', status: 'WARN', summary: 'Gitea HTTPS válido, PAT ainda não configurado', details: null };
   }
-  const probeErr = await probeEndpointIfConfigured(fetchFn, `${new URL(giteaUrl).origin}/api/v1/version`, {});
+  const rawPat = secretStore ? await secretStore.getSecret(GITEA_PAT_SECRET_KEY) : null;
+  const pat = rawPat?.trim() ?? '';
+  const probe = await probeGiteaPat(fetchFn, new URL(giteaUrl).origin, pat);
   return {
     id: 'GITEA_API',
-    status: probeErr ? 'WARN' : 'OK',
-    summary: probeErr ? `Gitea inacessível (${probeErr})` : 'Gitea HTTPS válido e PAT configurado',
-    details: probeErr,
+    status: probe.status,
+    summary: probe.summary,
+    details: probe.details,
   };
 }
 

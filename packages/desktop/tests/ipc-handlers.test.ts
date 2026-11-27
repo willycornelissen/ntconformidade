@@ -636,4 +636,104 @@ function buildMinimalValidPdf(text: string): Buffer {
 
     db.close();
   });
+
+  it('IPC-08: allows empty xsdDir from CHECK_COMPLIANCE and N/A xsdDir in APPLY_NC only when NC has no_structural_gaps', async () => {
+    const dir = createTempDir();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const db = openDatabase(path.join(dir, 'ntc.sqlite'));
+    db.seedDefaultRepos([SAMPLE_REPO]);
+    db.upsertNtCatalogEntries([SAMPLE_NT]);
+
+    const secretStore = new SafeStorageSecretStore({
+      vaultFilePath: path.join(dir, 'secrets.enc.json'),
+      backend: {
+        isEncryptionAvailable: () => true,
+        encryptString: (v) => Buffer.from(v, 'utf8'),
+        decryptString: (b) => b.toString('utf8'),
+      },
+    });
+
+    const nfeNcDir = path.join(dir, 'ncs', 'NFe');
+    mkdirSync(nfeNcDir, { recursive: true });
+    writeFileSync(
+      path.join(nfeNcDir, 'NC-no-gaps.json'),
+      JSON.stringify({ ...SAMPLE_NC, no_structural_gaps: true, confirmed_no_gaps: true, items: [] }),
+      'utf8',
+    );
+    writeFileSync(
+      path.join(nfeNcDir, 'NC-has-gaps.json'),
+      JSON.stringify({ ...SAMPLE_NC, no_structural_gaps: false }),
+      'utf8',
+    );
+
+    const controller = createDesktopIpcController({
+      db,
+      secretStore,
+      dataDir: dir,
+      oracleJarPath: '/opt/xsd-oracle.jar',
+      allowedSenderOrigins: ['file:///app/'],
+      emitProgress: () => undefined,
+      orchestrator: {
+        generateDraftNc: async ({ runId }) => {
+          const run = db.createComplianceRun({
+            runId,
+            dfe: 'NFe',
+            ntId: SAMPLE_NT.id,
+            operatorName: 'Op',
+            provider: 'gemini',
+            modelId: 'gemini-3.1-pro-preview',
+            baseCommitSha: '1'.repeat(40),
+            ncJsonPath: 'NFe/NC-no-gaps.json',
+          });
+          return {
+            run,
+            savedNc: { nc: { ...SAMPLE_NC, no_structural_gaps: true, confirmed_no_gaps: true, items: [] } },
+            xsdDir: '',
+          };
+        },
+        approveAndRunCompliance: async ({ runId }) => ({
+          run: db.getComplianceRun(runId)!,
+          patchFilePath: null,
+          prUrl: null,
+          mavenResult: null,
+        }),
+      },
+    });
+    const trusted: IpcMainEventLike = { senderFrame: { url: 'file:///app/index.html' } };
+
+    const checkRes = (await controller.dispatch(IPC_CHANNELS.CHECK_COMPLIANCE, trusted, {
+      runId: 'run-no-xsd-ipc',
+      dfe: 'NFe',
+      ntId: SAMPLE_NT.id,
+      byokConfig: BYOK_CONFIG,
+    })) as { xsdDir: string };
+    expect(checkRes.xsdDir).toBe('');
+
+    const applyOk = await controller.dispatch(IPC_CHANNELS.APPLY_NC, trusted, {
+      runId: 'run-no-xsd-ipc',
+      byokConfig: BYOK_CONFIG,
+      xsdDir: 'N/A',
+    });
+    expect(applyOk).toMatchObject({ patchFilePath: null, prUrl: null });
+
+    db.createComplianceRun({
+      runId: 'run-gaps-na',
+      dfe: 'NFe',
+      ntId: SAMPLE_NT.id,
+      operatorName: 'Op',
+      provider: 'gemini',
+      modelId: 'gemini-3.1-pro-preview',
+      baseCommitSha: '1'.repeat(40),
+      ncJsonPath: 'NFe/NC-has-gaps.json',
+    });
+    await expect(
+      controller.dispatch(IPC_CHANNELS.APPLY_NC, trusted, {
+        runId: 'run-gaps-na',
+        byokConfig: BYOK_CONFIG,
+        xsdDir: 'N/A',
+      }),
+    ).rejects.toThrow(/permitidos/i);
+
+    db.close();
+  });
 });

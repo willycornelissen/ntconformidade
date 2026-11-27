@@ -866,4 +866,142 @@ describe('ComplianceOrchestrator (CUJ 2–4)', () => {
     expect(db.getComplianceRun('run-user-abort')?.failedStep).toBe('USER_ABORT');
     db.close();
   }, 20_000);
+
+  it('OR-08: supports SVRS NTs with pdfUrl and xsdUrl: null (e.g. DANFE-only NT 2026.010) and rejects when PDF is missing', async () => {
+    const { db, commitSha, root } = setupRealBareRepoAndDb();
+    const danfeNt: NtCatalogEntry = {
+      id: 'NFe:2026.010:v1.00',
+      dfe: 'NFe',
+      ntNumber: '2026.010',
+      ntVersion: 'v1.00',
+      publishedDate: '2026-10-01',
+      homologDate: null,
+      prodDate: null,
+      pdfUrl: 'https://dfe-portal.svrs.rs.gov.br/NFE/DownloadArquivoEstatico/?sistema=NFE&tipoArquivo=3&nomeArquivo=NFe_NT_2026.010_v1_00_DANFE_RTC.pdf',
+      xsdUrl: null,
+      pdfSha256: null,
+      sourceStatus: 'DISCOVERED',
+      fetchedAt: '2026-11-26T08:00:00.000Z',
+    };
+    const missingPdfNt: NtCatalogEntry = {
+      ...danfeNt,
+      id: 'NFe:2026.099:v1.00',
+      ntNumber: '2026.099',
+      pdfUrl: null,
+      xsdUrl: null,
+    };
+    db.upsertNtCatalogEntries([danfeNt, missingPdfNt]);
+
+    const buildMinimalPdf = (text: string): Buffer => {
+      const chunks: Buffer[] = [];
+      const offsets: number[] = [];
+      let pos = 0;
+      const push = (str: string): void => {
+        const b = Buffer.from(str, 'latin1');
+        chunks.push(b);
+        pos += b.length;
+      };
+      const addObj = (id: number, body: string): void => {
+        offsets[id] = pos;
+        push(`${id} 0 obj\n${body}\nendobj\n`);
+      };
+      push('%PDF-1.4\n');
+      addObj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+      addObj(2, '<< /Type /Pages /Kids [4 0 R] /Count 1 >>');
+      addObj(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+      const stream = `BT /F1 11 Tf 40 760 Td (${text}) Tj ET`;
+      addObj(4, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>');
+      addObj(5, `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`);
+      const xrefPos = pos;
+      push('xref\n0 6\n0000000000 65535 f \n');
+      for (let id = 1; id < 6; id += 1) {
+        push(`${String(offsets[id]).padStart(10, '0')} 00000 n \n`);
+      }
+      push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`);
+      return Buffer.concat(chunks);
+    };
+    const validPdfBytes = buildMinimalPdf('NT 2026.010 Alteracoes no leiaute de impressao DANFE');
+
+    const extractXsdSpy = vi.fn(async () => ({ rootElements: ['NFEPROC'], nodes: [] }));
+    const analyzeComplianceSpy = vi.fn(async (input: Parameters<LlmGatewayPort['analyzeCompliance']>[0]) => ({
+      nc: {
+        nc_id: 'NC-2026.010-v1.00',
+        nt_ref: {
+          dfe: 'NFe' as const,
+          nt_number: input.nt.ntNumber,
+          nt_version: input.nt.ntVersion,
+          published_date: input.nt.publishedDate,
+          pdf_sha256: input.pdf.pdfSha256,
+        },
+        base_commit_sha: commitSha,
+        no_structural_gaps: true,
+        confirmed_no_gaps: true,
+        items: [],
+        created_at: '2026-11-26T08:00:00.000Z',
+        updated_at: '2026-11-26T08:00:00.000Z',
+      },
+      usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30, stage: 'llm-check' },
+    }));
+
+    const orchestrator = new ComplianceOrchestrator({
+      db,
+      oracle: {
+        ...makeOracleMock(),
+        extractXsd: extractXsdSpy,
+      },
+      llmGateway: {
+        analyzeCompliance: analyzeComplianceSpy,
+        async generatePatch() {
+          throw new Error('unused');
+        },
+        async repairPatch() {
+          throw new Error('unused');
+        },
+      },
+      gitForge: makeForge(new WorktreeManager({ allowLocalFileRemotes: true }), root, async () => {
+        throw new Error('unused');
+      }),
+      ncWorkspaceDir: path.join(root, 'ncs'),
+      cacheRootDir: path.join(root, 'cache'),
+      mirrorsRootDir: path.join(root, 'mirrors'),
+      worktreesRootDir: path.join(root, 'worktrees'),
+      patchesDir: path.join(root, 'patches'),
+      fetchFn: async () => new Response(new Uint8Array(validPdfBytes), { status: 200 }),
+    });
+
+    const draft = await orchestrator.generateDraftNc({
+      runId: 'run-danfe-no-xsd',
+      dfe: 'NFe',
+      ntId: danfeNt.id,
+      byokConfig: BYOK_CONFIG,
+    });
+    expect(draft.xsdDir).toBe('');
+    expect(extractXsdSpy).not.toHaveBeenCalled();
+    expect(analyzeComplianceSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        diffFindings: [],
+      }),
+    );
+
+    const applied = await orchestrator.approveAndRunCompliance({
+      runId: 'run-danfe-no-xsd',
+      byokConfig: BYOK_CONFIG,
+      xsdDir: 'N/A',
+      requestPreBuildApproval: async () => ({ approved: true }),
+      requestPrApproval: async () => ({ approved: true }),
+    });
+    expect(applied.run.status).toBe('TESTED');
+    expect(applied.patchFilePath).toBeNull();
+
+    await expect(
+      orchestrator.generateDraftNc({
+        runId: 'run-missing-pdf',
+        dfe: 'NFe',
+        ntId: missingPdfNt.id,
+        byokConfig: BYOK_CONFIG,
+      }),
+    ).rejects.toThrow(/Artefato PDF ausente/i);
+
+    db.close();
+  }, 20_000);
 });

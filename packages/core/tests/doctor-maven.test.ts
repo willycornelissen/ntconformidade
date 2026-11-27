@@ -385,5 +385,31 @@ describe('Toolchain Doctor & Host Maven Runner', () => {
     });
     expect(probeReport.checks.find((c) => c.id === 'GITEA_API')?.status).toBe('OK');
     expect(probeReport.checks.find((c) => c.id === 'LLM_ENDPOINT')?.status).toBe('WARN');
+
+    const badPatReport = await runDoctor({
+      giteaUrl: 'https://git.fazenda.internal/Integracao/nfe-parser',
+      secretStore: {
+        async setSecret() {},
+        async getSecret(key) {
+          return key === 'ntc:gitea:pat' ? 'expired-gitea-pat' : null;
+        },
+        async getSecretStatus(key) {
+          return { configured: key === 'ntc:gitea:pat' };
+        },
+        async deleteSecret() {},
+      },
+      fetchFn: async () => new Response('Unauthorized', { status: 401 }),
+      execFileFn: async (file, args) => {
+        if (file === 'java') return { stdout: '', stderr: 'openjdk version "21.0.4"' };
+        if (file === 'mvn') return { stdout: 'Apache Maven 3.8.7', stderr: '' };
+        if (file === 'git' && args[0] === '--version') return { stdout: 'git version 2.43.0', stderr: '' };
+        if (file === 'git' && args[0] === 'config') return { stdout: 'x', stderr: '' };
+        throw new Error('unexpected');
+      },
+    });
+    const giteaCheck = badPatReport.checks.find((c) => c.id === 'GITEA_API');
+    expect(giteaCheck?.status).toBe('ERROR');
+    expect(giteaCheck?.summary).toMatch(/401/);
+    expect(JSON.stringify(badPatReport)).not.toContain('expired-gitea-pat');
   });
 });
